@@ -10,6 +10,7 @@
 - 发布按钮点击
 """
 
+import json
 import os
 import sys
 import time
@@ -181,21 +182,19 @@ class KuaishouPublisherCore(BasePublisher):
             # 2. 上传视频
             self._upload_video(video_path)
 
-            # 3. 等待视频处理
-            self._wait_video_processing()
-
-            # 4. 填写标题
+            # 3. 填写标题（视频上传后立即可填写，无需等待处理完成）
             self._fill_title(title)
 
-            # 5. 填写描述
+            # 4. 填写描述
             self._fill_content(content)
 
-            # 6. 上传封面（如果提供）
+            # 5. 上传封面（如果提供）
             if cover_path:
                 self._upload_cover(cover_path)
 
-            # 7. 点击发布按钮
+            # 6. 等待视频处理完成并发布（仅在需要发布时等待）
             if auto_publish:
+                self._wait_video_processing()
                 self._click_publish()
                 return {"status": "success", "message": "视频发布成功"}
             else:
@@ -266,11 +265,26 @@ class KuaishouPublisherCore(BasePublisher):
         """填写描述"""
         print(f"[Kuaishou] 填写描述: {content[:50]}...")
 
-        self.ui.fill_input(
-            SELECTORS["content_input"],
-            content,
-            clear_first=True,
-        )
+        # 智能判断编辑器类型
+        is_contenteditable = self.cdp.evaluate(f"""
+            (() => {{
+                const el = document.querySelector({json.dumps(SELECTORS["content_input"])});
+                return el && el.getAttribute('contenteditable') === 'true';
+            }})()
+        """)
+
+        if is_contenteditable:
+            self.ui.fill_contenteditable(
+                SELECTORS["content_input"],
+                content,
+                clear_first=True,
+            )
+        else:
+            self.ui.fill_input(
+                SELECTORS["content_input"],
+                content,
+                clear_first=True,
+            )
 
         self.cdp.sleep(ACTION_INTERVAL)
 
