@@ -55,7 +55,7 @@ SELECTORS = {
     "publish_button_text": "立即投稿",
 
     # 登录指示器
-    "login_indicator": '.nav-user-info, [class*="user"]',
+    "login_indicator": '.avatar',
 
     # 视频处理状态
     "video_processing_indicator": '[class*="progress"], [class*="uploading"], [class*="transcoding"]',
