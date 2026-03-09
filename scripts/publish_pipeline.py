@@ -303,7 +303,15 @@ def _select_topics(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Xiaohongshu publish pipeline - unified entry point"
+        description="Multi-platform publish pipeline - unified entry point"
+    )
+
+    # Platform selection
+    parser.add_argument(
+        "--platform",
+        choices=["xiaohongshu", "douyin", "bilibili", "kuaishou"],
+        default="xiaohongshu",
+        help="Target platform (default: xiaohongshu)",
     )
 
     # Title
@@ -414,6 +422,7 @@ def main():
     )
 
     args = parser.parse_args()
+    platform = args.platform
     host = args.host
     port = args.port
     headless = args.headless
@@ -479,13 +488,44 @@ def main():
         )
 
     # --- Step 2: Connect and check login ---
-    print("[pipeline] Step 2: Checking login status...")
-    publisher = XiaohongshuPublisher(
-        host=host,
-        port=port,
-        timing_jitter=timing_jitter,
-        account_name=cache_account_name,
-    )
+    print(f"[pipeline] Step 2: Checking login status (platform: {platform})...")
+
+    # 根据平台动态加载 Publisher
+    if platform == "xiaohongshu":
+        from cdp_publish import XiaohongshuPublisher
+        publisher = XiaohongshuPublisher(
+            host=host,
+            port=port,
+            timing_jitter=timing_jitter,
+            account_name=cache_account_name,
+        )
+    elif platform == "douyin":
+        from douyin.publisher_core import DouyinPublisherCore
+        publisher = DouyinPublisherCore(
+            host=host,
+            port=port,
+            timing_jitter=timing_jitter,
+            account_name=cache_account_name,
+        )
+    elif platform == "bilibili":
+        from bilibili.publisher_core import BilibiliPublisherCore
+        publisher = BilibiliPublisherCore(
+            host=host,
+            port=port,
+            timing_jitter=timing_jitter,
+            account_name=cache_account_name,
+        )
+    elif platform == "kuaishou":
+        from kuaishou.publisher_core import KuaishouPublisherCore
+        publisher = KuaishouPublisherCore(
+            host=host,
+            port=port,
+            timing_jitter=timing_jitter,
+            account_name=cache_account_name,
+        )
+    else:
+        print(f"Error: Unsupported platform: {platform}", file=sys.stderr)
+        sys.exit(2)
     try:
         publisher.connect(reuse_existing_tab=reuse_existing_tab)
         logged_in = publisher.check_login()
@@ -562,7 +602,11 @@ def main():
             publisher.publish(
                 title=title, content=content, image_paths=image_paths
             )
-        _select_topics(publisher, topic_tags, timing_jitter=timing_jitter)
+
+        # 小红书特定：选择话题标签
+        if platform == "xiaohongshu" and topic_tags:
+            _select_topics(publisher, topic_tags, timing_jitter=timing_jitter)
+
         print("FILL_STATUS: READY_TO_PUBLISH")
     except CDPError as e:
         print(f"Error during form fill: {e}", file=sys.stderr)
