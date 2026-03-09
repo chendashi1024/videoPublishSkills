@@ -1,0 +1,210 @@
+.app-container {
+  max-width: 1400px;
+  margin: 0 auto;
+  min-height: 100vh;
+  padding: 2rem;
+}
+
+.app-header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.app-header h1 {
+  margin: 0;
+  color: #fff;
+  font-size: 2.5rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, #646cff 0%, #747bff 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.content-wrapper {
+  display: flex;
+  gap: 2rem;
+}
+
+.left-panel,
+.right-panel {
+  flex: 1;
+  background: #1a1a1a;
+  padding: 2rem;
+  border-radius: 12px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.panel-header h2 {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+h2 {
+  margin-top: 0;
+  margin-bottom: 1.5rem;
+  color: #fff;
+  font-size: 1.5rem;
+  border-bottom: 2px solid #646cff;
+  padding-bottom: 0.5rem;
+}
+
+.select-all-btn {
+  padding: 0.5rem 1rem;
+  border: 1px solid #646cff;
+  border-radius: 6px;
+  background: transparent;
+  color: #646cff;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.3s;
+  font-weight: 500;
+}
+
+.select-all-btn:hover {
+  background: #646cff;
+  color: #fff;
+}
+
+.form-group {
+  margin-bottom: 1.5rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: #fff;
+  font-weight: 500;
+}
+
+.form-group input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #2a2a2a;
+  color: #fff;
+  font-size: 1rem;
+  transition: border-color 0.3s;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: #646cff;
+}
+
+.drop-zone {
+  border: 2px dashed #646cff;
+  border-radius: 8px;
+  padding: 2rem;
+  text-align: center;
+  background: #2a2a2a;
+  cursor: pointer;
+  transition: all 0.3s;
+  min-height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.drop-zone:hover {
+  background: #333;
+  border-color: #747bff;
+}
+
+.drop-hint {
+  color: #888;
+  font-size: 0.95rem;
+}
+
+.file-info {
+  color: #fff;
+  font-size: 0.95rem;
+}
+
+.file-info span {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  background: #333;
+  border-radius: 6px;
+}
+
+.platform-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.platform-btn {
+  padding: 1.2rem;
+  border: 2px solid #333;
+  border-radius: 8px;
+  background: #2a2a2a;
+  color: #fff;
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: all 0.3s;
+  font-weight: 500;
+}
+
+.platform-btn:hover {
+  background: #333;
+  border-color: #646cff;
+}
+
+.platform-btn.active {
+  background: #646cff;
+  border-color: #646cff;
+  color: #fff;
+}
+
+.main-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #333;
+}
+
+.action-btn {
+  padding: 1rem 1.5rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: all 0.3s;
+  font-weight: 600;
+}
+
+.preview-btn {
+  background: #4a5568;
+  color: #fff;
+}
+
+.preview-btn:hover {
+  background: #5a6678;
+}
+
+.publish-all-btn {
+  background: #646cff;
+  color: #fff;
+}
+
+.publish-all-btn:hover {
+  background: #747bff;
+}
+
+@media (max-width: 1024px) {
+  .content-wrapper {
+    flex-direction: column;
+  }
+}
