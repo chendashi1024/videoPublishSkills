@@ -160,7 +160,7 @@ class KuaishouPublisherCore(BasePublisher):
 
         Args:
             title: 标题
-            content: 描述
+            content: 描述（快手会忽略此参数，只使用标题）
             video_path: 视频文件路径
             cover_path: 封面图片路径（可选）
             auto_publish: 是否自动点击发布按钮
@@ -182,17 +182,14 @@ class KuaishouPublisherCore(BasePublisher):
             # 2. 上传视频
             self._upload_video(video_path)
 
-            # 3. 填写标题（视频上传后立即可填写，无需等待处理完成）
-            self._fill_title(title)
+            # 3. 填写作品描述（快手只有作品描述字段，用标题填充）
+            self._fill_content(title)
 
-            # 4. 填写描述
-            self._fill_content(content)
-
-            # 5. 上传封面（如果提供）
+            # 4. 上传封面（如果提供）
             if cover_path:
                 self._upload_cover(cover_path)
 
-            # 6. 等待视频处理完成并发布（仅在需要发布时等待）
+            # 5. 等待视频处理完成并发布（仅在需要发布时等待）
             if auto_publish:
                 self._wait_video_processing()
                 self._click_publish()
@@ -249,23 +246,17 @@ class KuaishouPublisherCore(BasePublisher):
 
         raise CDPError(f"视频处理超时（{VIDEO_PROCESS_TIMEOUT}秒）")
 
-    def _fill_title(self, title: str):
-        """填写标题"""
-        print(f"[Kuaishou] 填写标题: {title}")
+    def _fill_content(self, content: str):
+        """填写作品描述"""
+        print(f"[Kuaishou] 填写作品描述: {content[:50]}...")
 
-        self.ui.fill_input(
-            SELECTORS["title_input"],
-            title,
+        self.ui.fill_contenteditable(
+            SELECTORS["content_input"],
+            content,
             clear_first=True,
         )
 
         self.cdp.sleep(ACTION_INTERVAL)
-
-    def _fill_content(self, content: str):
-        """填写描述（快手没有单独的描述字段，跳过）"""
-        print(f"[Kuaishou] 快手没有单独的描述字段，跳过")
-        # 快手只有标题，没有描述字段
-        pass
 
     def _upload_cover(self, cover_path: str):
         """上传封面"""
