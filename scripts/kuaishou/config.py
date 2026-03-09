@@ -38,7 +38,7 @@ SELECTORS = {
     "title_input": 'input[placeholder*="标题"], input[placeholder*="作品标题"]',
 
     # 描述/正文输入框（上传后动态出现）
-    "content_input": 'textarea[placeholder*="描述"], textarea[placeholder*="作品描述"], div[contenteditable="true"]',
+    "content_input": 'div[contenteditable="true"][class*="description"], textarea[placeholder*="描述"], textarea[placeholder*="作品描述"]',
 
     # 话题标签（上传后动态出现）
     "topic_input": 'input[placeholder*="话题"], input[placeholder*="添加话题"]',

@@ -262,31 +262,10 @@ class KuaishouPublisherCore(BasePublisher):
         self.cdp.sleep(ACTION_INTERVAL)
 
     def _fill_content(self, content: str):
-        """填写描述"""
-        print(f"[Kuaishou] 填写描述: {content[:50]}...")
-
-        # 智能判断编辑器类型
-        is_contenteditable = self.cdp.evaluate(f"""
-            (() => {{
-                const el = document.querySelector({json.dumps(SELECTORS["content_input"])});
-                return el && el.getAttribute('contenteditable') === 'true';
-            }})()
-        """)
-
-        if is_contenteditable:
-            self.ui.fill_contenteditable(
-                SELECTORS["content_input"],
-                content,
-                clear_first=True,
-            )
-        else:
-            self.ui.fill_input(
-                SELECTORS["content_input"],
-                content,
-                clear_first=True,
-            )
-
-        self.cdp.sleep(ACTION_INTERVAL)
+        """填写描述（快手没有单独的描述字段，跳过）"""
+        print(f"[Kuaishou] 快手没有单独的描述字段，跳过")
+        # 快手只有标题，没有描述字段
+        pass
 
     def _upload_cover(self, cover_path: str):
         """上传封面"""
