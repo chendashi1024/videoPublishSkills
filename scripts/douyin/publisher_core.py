@@ -281,7 +281,7 @@ class DouyinPublisherCore(BasePublisher):
         """上传封面"""
         print(f"[Douyin] 上传封面: {cover_path}")
         # 抖音封面上传逻辑（需根据实际页面调整）
-        # 暂时跳过
+        print("[Douyin] 封面自动上传暂未实现，请在发布前手动选择竖版封面")
         pass
 
     def _click_publish(self):

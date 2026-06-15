@@ -30,7 +30,7 @@ Usage:
     python publish_pipeline.py --title "标题" --content "正文" --images "\\\\wsl.localhost\\Ubuntu\\home\\me\\a.jpg" --skip-file-check
 
     # Publish a video (local file)
-    python publish_pipeline.py --title "标题" --content "正文" --video video.mp4
+    python publish_pipeline.py --title "标题" --content "正文" --video video.mp4 --cover cover.jpg --preview
 
     # Publish a video (from URL)
     python publish_pipeline.py --title "标题" --content "正文" --video-url "https://example.com/video.mp4"
@@ -357,6 +357,12 @@ def main():
         help="Preview mode: fill content only and never click publish button",
     )
 
+    parser.add_argument(
+        "--cover",
+        default=None,
+        help="Local cover image path for video mode. The platform module may skip it if cover upload is unsupported.",
+    )
+
     # Headless mode
     parser.add_argument(
         "--headless",
@@ -557,7 +563,16 @@ def main():
     # --- Step 3: Prepare media ---
     image_paths = []
     video_path = None
+    cover_path = args.cover
     downloader = None
+
+    if cover_path:
+        _verify_local_files_exist(
+            file_paths=[cover_path],
+            media_label="Cover",
+            skip_file_check=args.skip_file_check,
+        )
+        print(f"[pipeline] Step 3: Using local cover: {cover_path}")
 
     if is_video_mode:
         if args.video_url:
@@ -595,9 +610,21 @@ def main():
     print("[pipeline] Step 4: Filling form...")
     try:
         if is_video_mode:
-            publisher.publish_video(
-                title=title, content=content, video_path=video_path
-            )
+            publish_video_kwargs = {
+                "title": title,
+                "content": content,
+                "video_path": video_path,
+            }
+            if platform != "xiaohongshu":
+                publish_video_kwargs["cover_path"] = cover_path
+                publish_video_kwargs["auto_publish"] = False
+            elif cover_path:
+                print(
+                    "[pipeline] Warning: Xiaohongshu video cover upload is not implemented yet; "
+                    "please set the cover manually before publishing."
+                )
+
+            publisher.publish_video(**publish_video_kwargs)
         else:
             publisher.publish(
                 title=title, content=content, image_paths=image_paths

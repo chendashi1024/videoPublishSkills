@@ -26,7 +26,7 @@ metadata:
 
 - 发布前必须让用户确认最终标题、正文和图片/视频。
 - 图文发布时，没有图片不得发布（小红书发图文必须有图片）。
-- 视频发布时，没有视频不得发布。图片和视频不可混合使用（二选一）。
+- 视频发布时，没有视频不得发布。图片和视频不可混合使用（二选一）。如果需要只填稿不发布，必须加 `--preview`。
 - 默认使用无头模式；若检测到未登录，切换有窗口模式登录。
 - 标题长度不超过 38（中文/中文标点按 2，英文数字按 1）。
 - 用户要求"仅测试浏览器"时，不得触发发布命令。
@@ -48,9 +48,9 @@ metadata:
 
 ## 视频发布流程
 
-1. 准备输入（标题、正文、视频文件路径或 URL）。
+1. 准备输入（标题、正文、视频文件路径或 URL，可选封面路径）。
 2. 如需文件输入，先写入 `title.txt`、`content.txt`。
-3. 执行视频发布命令（默认无头）。视频上传后需等待处理完成。
+3. 执行视频发布命令（默认无头）。视频上传后需等待处理完成；人工确认场景必须加 `--preview`。
 4. 回传执行结果（成功/失败 + 关键信息）。
 
 ## 内容检索与互动流程（搜索/详情/评论/内容数据）
@@ -196,13 +196,16 @@ python scripts/publish_pipeline.py --headless \
 
   --title-file title.txt \
   --content-file content.txt \
-  --video "C:/videos/my_video.mp4"
+  --video "C:/videos/my_video.mp4" \
+  --cover "C:/videos/cover.jpg"
 ```
 
 ```bash
 python scripts/publish_pipeline.py  --title-file title.txt \
+  --preview \
   --content-file content.txt \
-  --video "C:/videos/my_video.mp4"
+  --video "C:/videos/my_video.mp4" \
+  --cover "C:/videos/cover.jpg"
 ```
 
 ### 3.6) 视频发布（视频 URL）
