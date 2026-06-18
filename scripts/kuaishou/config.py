@@ -43,6 +43,9 @@ SELECTORS = {
     # 话题标签（上传后动态出现）
     "topic_input": 'input[placeholder*="话题"], input[placeholder*="添加话题"]',
 
+    # 封面上传
+    "cover_upload_input": 'input[type="file"][accept*="image"]',
+
     # 发布按钮
     "publish_button": 'button:has-text("发布"), button[class*="publish"]',
     "publish_button_text": "发布",

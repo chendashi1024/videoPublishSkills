@@ -290,6 +290,7 @@ class KuaishouPublisherCore(BasePublisher):
         })
 
         self.cdp.sleep(2)
+        print("[Kuaishou] 封面上传完成")
 
     def _click_publish(self):
         """点击发布按钮"""
