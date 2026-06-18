@@ -182,8 +182,11 @@ class KuaishouPublisherCore(BasePublisher):
             # 2. 上传视频
             self._upload_video(video_path)
 
-            # 3. 填写作品描述（快手只有作品描述字段，用标题填充）
-            self._fill_content(title)
+            # 3. 填写作品描述（快手只有作品描述字段，合并标题、正文和话题）
+            description_parts = [title.strip()]
+            if content and content.strip() and content.strip() != title.strip():
+                description_parts.append(content.strip())
+            self._fill_content("\n\n".join(description_parts))
 
             # 4. 上传封面（如果提供）
             if cover_path:

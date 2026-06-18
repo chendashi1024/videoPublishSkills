@@ -153,6 +153,19 @@ def _extract_topic_tags_from_last_line(content: str) -> tuple[str, list[str]]:
     return body, parts
 
 
+def _append_topic_tags_to_content(content: str, topic_tags: list[str]) -> str:
+    """把话题标签恢复为正文最后一个非空行。"""
+    if not topic_tags:
+        return content
+
+    tag_line = " ".join(topic_tags)
+    body = content.strip()
+    if not body:
+        return tag_line
+
+    return f"{body}\n\n{tag_line}"
+
+
 def _verify_local_files_exist(
     file_paths: list[str],
     media_label: str,
@@ -467,6 +480,7 @@ def main():
         sys.exit(2)
 
     content, topic_tags = _extract_topic_tags_from_last_line(content)
+    content_with_topic_tags = _append_topic_tags_to_content(content, topic_tags)
     if topic_tags:
         print(
             "[pipeline] Detected topic tags from last line: "
@@ -608,11 +622,16 @@ def main():
 
     # --- Step 4: Fill form ---
     print("[pipeline] Step 4: Filling form...")
+    # 小红书通过话题选择器单独确认话题；其他平台把话题行保留在正文/简介底部。
+    platform_content = content
+    if platform in {"douyin", "kuaishou", "bilibili"}:
+        platform_content = content_with_topic_tags
+
     try:
         if is_video_mode:
             publish_video_kwargs = {
                 "title": title,
-                "content": content,
+                "content": platform_content,
                 "video_path": video_path,
             }
             if platform != "xiaohongshu":
@@ -627,7 +646,7 @@ def main():
             publisher.publish_video(**publish_video_kwargs)
         else:
             publisher.publish(
-                title=title, content=content, image_paths=image_paths
+                title=title, content=platform_content, image_paths=image_paths
             )
 
         # 小红书特定：选择话题标签
