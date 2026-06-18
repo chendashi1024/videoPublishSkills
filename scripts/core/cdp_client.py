@@ -124,8 +124,8 @@ class CDPClient:
             if t.get("type") == "page" and t.get("webSocketDebuggerUrl")
         ]
 
-        # 优先查找匹配 URL 的标签页
-        if target_url_prefix:
+        # 只有显式要求复用时才查找已有平台页，避免默认拿到未保存草稿页后触发离开确认框。
+        if reuse_existing_tab and target_url_prefix:
             for t in pages:
                 if t.get("url", "").startswith(target_url_prefix):
                     print(f"[CDPClient] 复用已有标签页: {t.get('url')}")
@@ -176,7 +176,8 @@ class CDPClient:
         )
 
         print(f"[CDPClient] 连接到 {ws_url}")
-        self.ws = ws_client.connect(ws_url)
+        # B站封面编辑器会通过 CDP 事件带出较大的 data:image 预览，默认 1MB 会断开连接。
+        self.ws = ws_client.connect(ws_url, max_size=None)
         print("[CDPClient] 已连接到 Chrome 标签页")
 
     def disconnect(self):

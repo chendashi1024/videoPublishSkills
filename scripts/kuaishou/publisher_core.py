@@ -95,6 +95,16 @@ class KuaishouPublisherCore(BasePublisher):
         if not self.cdp.ws:
             raise CDPError("未连接，请先调用 connect()")
 
+        # 如果当前已经在快手创作者页面，先就地检查，避免离开未保存草稿触发浏览器确认框。
+        current_url = self.cdp.get_current_url()
+        if current_url.startswith(KUAISHOU_CREATOR_LOGIN_CHECK_URL):
+            has_login = self.ui.wait_for_element(
+                SELECTORS["login_indicator"],
+                timeout=2,
+            )
+            if has_login:
+                return True
+
         self.cdp.navigate(KUAISHOU_CREATOR_LOGIN_CHECK_URL)
         self.cdp.sleep(PAGE_LOAD_WAIT)
 
@@ -175,9 +185,11 @@ class KuaishouPublisherCore(BasePublisher):
             raise CDPError("快手发布视频需要提供视频文件")
 
         try:
-            # 1. 导航到发布页面
-            self.cdp.navigate(KUAISHOU_CREATOR_URL)
-            self.cdp.sleep(PAGE_LOAD_WAIT)
+            # 1. 导航到发布页面；新建 tab 已经打开上传入口时不重复导航。
+            current_url = self.cdp.get_current_url()
+            if not current_url.startswith(KUAISHOU_CREATOR_URL):
+                self.cdp.navigate(KUAISHOU_CREATOR_URL)
+                self.cdp.sleep(PAGE_LOAD_WAIT)
 
             # 2. 上传视频
             self._upload_video(video_path)

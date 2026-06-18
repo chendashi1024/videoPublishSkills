@@ -176,6 +176,16 @@ def _send_cdp(publisher, method: str, params: dict | None = None):
     raise RuntimeError("publisher does not expose a CDP send method")
 
 
+def _evaluate_js(publisher, expression: str):
+    """兼容新旧发布器的 JavaScript 执行入口。"""
+    if hasattr(publisher, "_evaluate"):
+        return publisher._evaluate(expression)
+    cdp = getattr(publisher, "cdp", None)
+    if cdp is not None and hasattr(cdp, "evaluate"):
+        return cdp.evaluate(expression)
+    raise RuntimeError("publisher does not expose a CDP evaluate method")
+
+
 def _cdp_click_rect(
     publisher,
     rect: dict,
@@ -199,6 +209,45 @@ def _cdp_click_rect(
             "clickCount": 1,
         })
         time.sleep(0.04)
+
+
+def _cdp_insert_text(publisher, text: str):
+    """通过 CDP 输入文本，触发平台编辑器的真实输入链路。"""
+    _send_cdp(publisher, "Input.insertText", {"text": text})
+
+
+def _cdp_press_key(publisher, key: str, count: int = 1):
+    """发送键盘按键事件。"""
+    key_code_map = {
+        "Backspace": 8,
+        "Escape": 27,
+        "Enter": 13,
+    }
+    code = key_code_map.get(key, 0)
+    for _ in range(max(1, count)):
+        event = {
+            "key": key,
+            "code": key,
+            "windowsVirtualKeyCode": code,
+            "nativeVirtualKeyCode": code,
+        }
+        _send_cdp(publisher, "Input.dispatchKeyEvent", {"type": "keyDown", **event})
+        _send_cdp(publisher, "Input.dispatchKeyEvent", {"type": "keyUp", **event})
+        time.sleep(0.03)
+
+
+def _cdp_hotkey(publisher, key: str, modifiers: int):
+    """发送带修饰键的快捷键；macOS Command 对应 modifiers=4。"""
+    event = {
+        "key": key,
+        "code": f"Key{key.upper()}",
+        "windowsVirtualKeyCode": ord(key.upper()),
+        "nativeVirtualKeyCode": ord(key.upper()),
+        "modifiers": modifiers,
+    }
+    _send_cdp(publisher, "Input.dispatchKeyEvent", {"type": "keyDown", **event})
+    _send_cdp(publisher, "Input.dispatchKeyEvent", {"type": "keyUp", **event})
+    time.sleep(0.1)
 
 
 def _upload_file_to_selectors(
@@ -255,7 +304,7 @@ def _upload_xiaohongshu_video_cover(
     """设置小红书视频 3:4 竖屏封面。"""
     print(f"[pipeline] Step 4.2: Uploading Xiaohongshu 3:4 cover: {cover_path}")
 
-    cover_rect = publisher._evaluate(r"""
+    cover_rect = _evaluate_js(publisher, r"""
         (() => {
             const selectors = [
                 '.cover-plugin-preview .cover .default',
@@ -281,7 +330,7 @@ def _upload_xiaohongshu_video_cover(
     _cdp_click_rect(publisher, cover_rect, timing_jitter)
     time.sleep(_jitter_seconds(1.3, timing_jitter, minimum_seconds=0.8))
 
-    ratio_rect = publisher._evaluate(r"""
+    ratio_rect = _evaluate_js(publisher, r"""
         (() => {
             const el = document.querySelector('.cover-modal .ratio-select, .d-modal .ratio-select');
             if (!el) return null;
@@ -294,7 +343,7 @@ def _upload_xiaohongshu_video_cover(
     if ratio_rect:
         _cdp_click_rect(publisher, ratio_rect, timing_jitter)
         time.sleep(_jitter_seconds(0.4, timing_jitter, minimum_seconds=0.2))
-        vertical_ratio_rect = publisher._evaluate(r"""
+        vertical_ratio_rect = _evaluate_js(publisher, r"""
             (() => {
                 const el = document.querySelector('.ratio-select-menu .ratio-item.ratio-3-4');
                 if (!el) return null;
@@ -321,7 +370,7 @@ def _upload_xiaohongshu_video_cover(
         return
 
     time.sleep(_jitter_seconds(2.5, timing_jitter, minimum_seconds=1.5))
-    confirm_rect = publisher._evaluate(r"""
+    confirm_rect = _evaluate_js(publisher, r"""
         (() => {
             const buttons = Array.from(document.querySelectorAll('.cover-modal button, .d-modal button'));
             for (const btn of buttons) {
@@ -338,7 +387,7 @@ def _upload_xiaohongshu_video_cover(
         _cdp_click_rect(publisher, confirm_rect, timing_jitter)
         time.sleep(_jitter_seconds(2.0, timing_jitter, minimum_seconds=1.0))
 
-    ok = publisher._evaluate(r"""
+    ok = _evaluate_js(publisher, r"""
         (() => {
             const cover = document.querySelector('.publish-page-content-cover .default');
             if (!cover) return false;
@@ -350,32 +399,60 @@ def _upload_xiaohongshu_video_cover(
     print("[pipeline] Xiaohongshu cover uploaded." if ok else "[pipeline] Warning: Xiaohongshu cover upload was not verified.")
 
 
-def _upload_douyin_vertical_cover(
+def _click_first_visible_text(
+    publisher,
+    text: str,
+    timing_jitter: float = 0.25,
+) -> bool:
+    """点击第一个可见的精确文本节点。"""
+    rect = _evaluate_js(publisher, f"""
+        (() => {{
+            const wanted = {json.dumps(text)};
+            const nodes = Array.from(document.querySelectorAll('button, div, span'));
+            for (const el of nodes) {{
+                const current = (el.innerText || el.textContent || '').trim();
+                const r = el.getBoundingClientRect();
+                if (current === wanted && r.width > 0 && r.height > 0) {{
+                    return {{ x: r.x, y: r.y, w: r.width, h: r.height }};
+                }}
+            }}
+            return null;
+        }})()
+    """)
+    if not rect:
+        return False
+    _cdp_click_rect(publisher, rect, timing_jitter)
+    return True
+
+
+def _upload_douyin_cover_card(
     publisher,
     cover_path: str,
+    card_label: str,
     timing_jitter: float = 0.25,
-):
-    """设置抖音竖封面，必要时跳过横封面追加提示。"""
-    print(f"[pipeline] Step 4.2: Uploading Douyin vertical cover: {cover_path}")
+) -> bool:
+    """上传抖音指定封面卡片，card_label 为「竖封面3:4」或「横封面4:3」。"""
+    print(f"[pipeline] Step 4.2: Uploading Douyin {card_label} cover: {cover_path}")
 
-    vertical_card_rect = publisher._evaluate(r"""
-        (() => {
+    card_rect = _evaluate_js(publisher, f"""
+        (() => {{
+            const wanted = {json.dumps(card_label)};
             const cards = Array.from(document.querySelectorAll('.coverControl-CjlzqC'));
-            for (const card of cards) {
+            for (const card of cards) {{
                 const text = (card.innerText || card.textContent || '').trim();
                 const r = card.getBoundingClientRect();
-                if (text.includes('竖封面3:4') && r.width > 0 && r.height > 0) {
-                    return { x: r.x, y: r.y, w: r.width, h: r.height };
-                }
-            }
+                if (text.includes(wanted) && r.width > 0 && r.height > 0) {{
+                    return {{ x: r.x, y: r.y, w: r.width, h: r.height }};
+                }}
+            }}
             return null;
-        })()
+        }})()
     """)
-    if not vertical_card_rect:
-        print("[pipeline] Warning: Douyin vertical cover card not found.")
-        return
+    if not card_rect:
+        print(f"[pipeline] Warning: Douyin {card_label} cover card not found.")
+        return False
 
-    _cdp_click_rect(publisher, vertical_card_rect, timing_jitter)
+    _cdp_click_rect(publisher, card_rect, timing_jitter)
     time.sleep(_jitter_seconds(1.8, timing_jitter, minimum_seconds=1.0))
 
     uploaded = _upload_file_to_all_matching_inputs(
@@ -386,12 +463,12 @@ def _upload_douyin_vertical_cover(
     )
     if not uploaded:
         print("[pipeline] Warning: Douyin cover image input not found.")
-        return
+        return False
 
     deadline = time.time() + 20
     complete_rect = None
     while time.time() < deadline:
-        complete_rect = publisher._evaluate(r"""
+        complete_rect = _evaluate_js(publisher, r"""
             (() => {
                 const buttons = Array.from(document.querySelectorAll(
                     '.dy-creator-content-modal button, .dy-creator-content-modal-wrap button'
@@ -415,41 +492,55 @@ def _upload_douyin_vertical_cover(
 
     if not complete_rect:
         print("[pipeline] Warning: Douyin cover complete button did not become enabled.")
-        return
+        return False
 
     _cdp_click_rect(publisher, complete_rect, timing_jitter)
     time.sleep(_jitter_seconds(2.0, timing_jitter, minimum_seconds=1.0))
 
-    skip_rect = publisher._evaluate(r"""
-        (() => {
-            const nodes = Array.from(document.querySelectorAll('button, div, span'));
-            for (const el of nodes) {
-                const text = (el.innerText || el.textContent || '').trim();
-                const r = el.getBoundingClientRect();
-                if (text === '暂不设置' && r.width > 0 && r.height > 0) {
-                    return { x: r.x, y: r.y, w: r.width, h: r.height };
-                }
-            }
-            return null;
-        })()
-    """)
-    if skip_rect:
-        _cdp_click_rect(publisher, skip_rect, timing_jitter)
-        time.sleep(_jitter_seconds(2.0, timing_jitter, minimum_seconds=1.0))
-
-    ok = publisher._evaluate(r"""
-        (() => {
+    ok = _evaluate_js(publisher, f"""
+        (() => {{
+            const wanted = {json.dumps(card_label)};
             const cards = Array.from(document.querySelectorAll('.coverControl-CjlzqC'));
-            const vertical = cards.find((card) => (card.innerText || card.textContent || '').includes('竖封面3:4'));
-            if (!vertical) return false;
-            return Array.from(vertical.querySelectorAll('[style*="background-image"]'))
-                .some((el) => {
+            const target = cards.find((card) => (card.innerText || card.textContent || '').includes(wanted));
+            if (!target) return false;
+            return Array.from(target.querySelectorAll('[style*="background-image"]'))
+                .some((el) => {{
                     const style = el.getAttribute('style') || '';
                     return style.includes('url(') && !style.includes('background-image: none');
-                });
-        })()
+                }});
+        }})()
     """)
-    print("[pipeline] Douyin vertical cover uploaded." if ok else "[pipeline] Warning: Douyin vertical cover upload was not verified.")
+    print(
+        f"[pipeline] Douyin {card_label} cover uploaded."
+        if ok
+        else f"[pipeline] Warning: Douyin {card_label} cover upload was not verified."
+    )
+    return bool(ok)
+
+
+def _upload_douyin_covers(
+    publisher,
+    vertical_cover_path: str,
+    horizontal_cover_path: str | None = None,
+    timing_jitter: float = 0.25,
+):
+    """设置抖音竖封面和横封面；缺横封面时才跳过横封面提示。"""
+    vertical_ok = _upload_douyin_cover_card(
+        publisher,
+        vertical_cover_path,
+        "竖封面3:4",
+        timing_jitter=timing_jitter,
+    )
+
+    if horizontal_cover_path:
+        _upload_douyin_cover_card(
+            publisher,
+            horizontal_cover_path,
+            "横封面4:3",
+            timing_jitter=timing_jitter,
+        )
+    elif vertical_ok and _click_first_visible_text(publisher, "暂不设置", timing_jitter):
+        time.sleep(_jitter_seconds(2.0, timing_jitter, minimum_seconds=1.0))
 
 
 def _verify_local_files_exist(
@@ -524,7 +615,7 @@ def _select_topics(
             time.sleep(0.04)
 
     def _move_caret_to_editor_end():
-        return publisher._evaluate("""
+        return _evaluate_js(publisher, """
             (() => {
                 const editor = document.querySelector(
                     'div.tiptap.ProseMirror, div.ProseMirror[contenteditable="true"]'
@@ -544,7 +635,7 @@ def _select_topics(
         """)
 
     def _topic_names() -> list[str]:
-        return publisher._evaluate(r"""
+        return _evaluate_js(publisher, r"""
             (() => {
                 const editor = document.querySelector(
                     'div.tiptap.ProseMirror, div.ProseMirror[contenteditable="true"]'
@@ -566,7 +657,7 @@ def _select_topics(
         """) or []
 
     def _find_topic_candidate(tag: str) -> dict | None:
-        return publisher._evaluate(f"""
+        return _evaluate_js(publisher, f"""
             (() => {{
                 const wanted = {json.dumps("#" + tag)};
                 const items = Array.from(document.querySelectorAll(
@@ -641,6 +732,220 @@ def _select_topics(
         )
 
 
+def _select_douyin_topics(
+    publisher,
+    tags: list[str],
+    timing_jitter: float = 0.25,
+):
+    """在抖音正文末尾通过话题联想选择器生成有效高亮话题。"""
+    normalized_tags = [tag.lstrip("#").strip() for tag in tags if tag.lstrip("#").strip()]
+    if not normalized_tags:
+        return
+
+    print(f"[pipeline] Step 4.1: Selecting {len(normalized_tags)} Douyin topic tag(s)...")
+    failed_tags = []
+
+    def _move_caret_to_editor_end() -> bool:
+        return bool(_evaluate_js(publisher, r"""
+            (() => {
+                const editor = document.querySelector('div.editor-kit-container[contenteditable="true"]');
+                if (!editor) return false;
+                editor.focus();
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(editor);
+                range.collapse(false);
+                selection.removeAllRanges();
+                selection.addRange(range);
+                return true;
+            })()
+        """))
+
+    def _mention_names() -> list[str]:
+        return _evaluate_js(publisher, r"""
+            (() => {
+                const editor = document.querySelector('div.editor-kit-container[contenteditable="true"]');
+                if (!editor) return [];
+                return Array.from(editor.querySelectorAll('[data-mention="#"]')).map((el) =>
+                    (el.innerText || el.textContent || '')
+                        .replace(/\u00a0/g, '')
+                        .replace(/^#/, '')
+                        .trim()
+                );
+            })()
+        """) or []
+
+    def _find_candidate(tag: str) -> dict | None:
+        return _evaluate_js(publisher, f"""
+            (() => {{
+                const wanted = {json.dumps("#" + tag)};
+                const items = Array.from(document.querySelectorAll(
+                    '.mention-suggest-item-container-TVOZMl, '
+                    + '.mention-suggest-item-container, '
+                    + '[class*="mention-suggest-item"]'
+                ));
+                const mapped = items.map((el) => {{
+                    const r = el.getBoundingClientRect();
+                    return {{
+                        text: (el.innerText || el.textContent || '').trim(),
+                        x: r.x,
+                        y: r.y,
+                        w: r.width,
+                        h: r.height,
+                    }};
+                }}).filter((item) => item.w > 0 && item.h > 0);
+                return mapped.find((item) => item.text.split(String.fromCharCode(10))[0].trim() === wanted) || null;
+            }})()
+        """)
+
+    def _restore_topic_state(before_names: set[str]) -> set[str]:
+        """撤回本轮失败的话题输入，避免平台自动吸附成错误话题。"""
+        _cdp_press_key(publisher, "Escape")
+        _move_caret_to_editor_end()
+        _cdp_hotkey(publisher, "z", modifiers=4)
+        time.sleep(_jitter_seconds(0.35, timing_jitter, minimum_seconds=0.2))
+
+        for _ in range(8):
+            current_names = set(_mention_names())
+            if current_names == before_names:
+                return current_names
+            _move_caret_to_editor_end()
+            _cdp_press_key(publisher, "Backspace")
+            time.sleep(_jitter_seconds(0.22, timing_jitter, minimum_seconds=0.12))
+
+        return set(_mention_names())
+
+    if not _move_caret_to_editor_end():
+        print("[pipeline] Warning: Douyin topic editor not found.")
+        return
+
+    for tag in normalized_tags:
+        if tag in _mention_names():
+            print(f"[pipeline] Douyin topic already selected: #{tag}")
+            continue
+
+        before_names = set(_mention_names())
+        _move_caret_to_editor_end()
+        _cdp_insert_text(publisher, f" #{tag}")
+        time.sleep(_jitter_seconds(1.2, timing_jitter, minimum_seconds=0.8))
+
+        candidate = _find_candidate(tag)
+        if candidate:
+            _cdp_click_rect(publisher, candidate, timing_jitter)
+            time.sleep(_jitter_seconds(0.9, timing_jitter, minimum_seconds=0.5))
+        else:
+            _restore_topic_state(before_names)
+
+        existing_after = set(_mention_names())
+        expected_after = before_names | {tag}
+        if existing_after == expected_after:
+            print(f"[pipeline] Douyin topic selected: #{tag}")
+        else:
+            if existing_after != before_names:
+                existing_after = _restore_topic_state(before_names)
+            failed_tags.append("#" + tag)
+            print(
+                f"[pipeline] Warning: Failed to select Douyin topic #{tag}. "
+                f"Current topics: {', '.join('#' + t for t in sorted(existing_after)) or '(none)'}"
+            )
+
+    if failed_tags:
+        print(
+            "[pipeline] Warning: Some Douyin topic tags were not selected: "
+            f"{', '.join(failed_tags)}"
+        )
+
+
+def _select_kuaishou_topics(
+    publisher,
+    tags: list[str],
+):
+    """在快手正文末尾插入平台同款 at-tag-item 话题节点。"""
+    normalized_tags = [tag.lstrip("#").strip() for tag in tags if tag.lstrip("#").strip()]
+    if not normalized_tags:
+        return
+
+    print(f"[pipeline] Step 4.1: Inserting {len(normalized_tags)} Kuaishou topic tag(s)...")
+    result = _evaluate_js(publisher, f"""
+        (() => {{
+            const tags = {json.dumps(normalized_tags, ensure_ascii=False)};
+            const editor = document.querySelector(
+                '#work-description-edit, div[contenteditable="true"][class*="description"]'
+            );
+            if (!editor) {{
+                return {{ ok: false, names: [], reason: 'editor not found' }};
+            }}
+
+            editor.focus();
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(editor);
+            range.collapse(false);
+            selection.removeAllRanges();
+            selection.addRange(range);
+
+            const existing = new Set(
+                Array.from(editor.querySelectorAll('.at-tag-item')).map((el) =>
+                    (el.getAttribute('data-tag-name') || el.innerText || '')
+                        .replace(/^#/, '')
+                        .trim()
+                )
+            );
+
+            const fragment = document.createDocumentFragment();
+            for (const tag of tags) {{
+                if (!tag || existing.has(tag)) continue;
+
+                fragment.appendChild(document.createTextNode('\\u00a0'));
+
+                const outer = document.createElement('span');
+                outer.setAttribute('is-tag', 'true');
+                outer.style.fontSize = '14px';
+                outer.style.letterSpacing = '0px';
+
+                const inner = document.createElement('span');
+                inner.className = 'at-tag-item';
+                inner.setAttribute('data-tag-name', tag);
+                inner.textContent = '#' + tag;
+                outer.appendChild(inner);
+                fragment.appendChild(outer);
+
+                const space = document.createElement('span');
+                space.style.fontSize = '14px';
+                space.style.letterSpacing = '0px';
+                space.textContent = '\\u00a0';
+                fragment.appendChild(space);
+            }}
+
+            range.insertNode(fragment);
+            range.collapse(false);
+            selection.removeAllRanges();
+            selection.addRange(range);
+
+            editor.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertHTML', data: null }}));
+            editor.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+            const names = Array.from(editor.querySelectorAll('.at-tag-item')).map((el) =>
+                (el.getAttribute('data-tag-name') || el.innerText || '')
+                    .replace(/^#/, '')
+                    .trim()
+            );
+            return {{ ok: true, names }};
+        }})()
+    """) or {}
+
+    names = set(result.get("names") or [])
+    missing = [f"#{tag}" for tag in normalized_tags if tag not in names]
+    for tag in normalized_tags:
+        if tag in names:
+            print(f"[pipeline] Kuaishou topic inserted: #{tag}")
+    if missing:
+        print(
+            "[pipeline] Warning: Some Kuaishou topic tags were not inserted: "
+            f"{', '.join(missing)}"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Multi-platform publish pipeline - unified entry point"
@@ -701,6 +1006,11 @@ def main():
         "--cover",
         default=None,
         help="Local cover image path for video mode. The platform module may skip it if cover upload is unsupported.",
+    )
+    parser.add_argument(
+        "--cover-horizontal",
+        default=None,
+        help="Local horizontal cover image path for platforms that support separate horizontal and vertical covers.",
     )
 
     # Headless mode
@@ -905,6 +1215,7 @@ def main():
     image_paths = []
     video_path = None
     cover_path = args.cover
+    horizontal_cover_path = args.cover_horizontal
     downloader = None
 
     if cover_path:
@@ -914,6 +1225,14 @@ def main():
             skip_file_check=args.skip_file_check,
         )
         print(f"[pipeline] Step 3: Using local cover: {cover_path}")
+
+    if horizontal_cover_path:
+        _verify_local_files_exist(
+            file_paths=[horizontal_cover_path],
+            media_label="Horizontal cover",
+            skip_file_check=args.skip_file_check,
+        )
+        print(f"[pipeline] Step 3: Using local horizontal cover: {horizontal_cover_path}")
 
     if is_video_mode:
         if args.video_url:
@@ -949,9 +1268,9 @@ def main():
 
     # --- Step 4: Fill form ---
     print("[pipeline] Step 4: Filling form...")
-    # 小红书话题必须走平台联想选择器，普通 #文本 不会生成有效话题节点。
+    # 抖音、快手、小红书话题必须走平台话题能力，普通 #文本 不会生成有效话题节点。
     platform_content = content
-    if platform in {"douyin", "kuaishou", "bilibili"}:
+    if platform == "bilibili":
         platform_content = content_with_topic_tags
 
     try:
@@ -968,11 +1287,22 @@ def main():
                 # 抖音封面需要走新版封面弹窗，填稿后单独处理。
                 publish_video_kwargs["auto_publish"] = False
 
-            publisher.publish_video(**publish_video_kwargs)
+            publish_result = publisher.publish_video(**publish_video_kwargs)
+            if isinstance(publish_result, dict) and publish_result.get("status") == "error":
+                raise CDPError(publish_result.get("message") or "视频填稿失败")
         else:
-            publisher.publish(
+            publish_result = publisher.publish(
                 title=title, content=platform_content, image_paths=image_paths
             )
+            if isinstance(publish_result, dict) and publish_result.get("status") == "error":
+                raise CDPError(publish_result.get("message") or "图文填稿失败")
+
+        if platform == "douyin" and topic_tags:
+            _select_douyin_topics(publisher, topic_tags, timing_jitter=timing_jitter)
+        elif platform == "kuaishou" and topic_tags:
+            _select_kuaishou_topics(publisher, topic_tags)
+        elif platform == "xiaohongshu" and topic_tags:
+            _select_topics(publisher, topic_tags, timing_jitter=timing_jitter)
 
         if is_video_mode and cover_path:
             if platform == "xiaohongshu":
@@ -982,14 +1312,12 @@ def main():
                     timing_jitter=timing_jitter,
                 )
             elif platform == "douyin":
-                _upload_douyin_vertical_cover(
+                _upload_douyin_covers(
                     publisher,
                     cover_path,
+                    horizontal_cover_path,
                     timing_jitter=timing_jitter,
                 )
-
-        if platform == "xiaohongshu" and topic_tags:
-            _select_topics(publisher, topic_tags, timing_jitter=timing_jitter)
 
         print("FILL_STATUS: READY_TO_PUBLISH")
     except CDPError as e:

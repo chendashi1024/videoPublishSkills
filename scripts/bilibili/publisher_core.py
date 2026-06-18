@@ -292,19 +292,101 @@ class BilibiliPublisherCore(BasePublisher):
         """上传封面"""
         print(f"[Bilibili] 上传封面: {cover_path}")
 
-        # 查找封面上传输入框
-        cover_input = self.ui.find_element(SELECTORS["cover_upload_input"])
-        if not cover_input:
-            print("[Bilibili] 未找到封面上传输入框，跳过")
+        opened = self.cdp.evaluate(r"""
+            (() => {
+                const candidates = Array.from(document.querySelectorAll(
+                    'span.edit-text, .cover-img span, .cover-main span, .cover-item span'
+                ));
+                const target = candidates.find((el) =>
+                    (el.textContent || '').trim().includes('封面设置')
+                );
+                if (!target) return false;
+                target.scrollIntoView({ block: 'center' });
+                const r = target.getBoundingClientRect();
+                const options = {
+                    bubbles: true,
+                    cancelable: true,
+                    clientX: r.x + r.width / 2,
+                    clientY: r.y + r.height / 2,
+                    view: window,
+                };
+                for (const type of ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+                    target.dispatchEvent(new MouseEvent(type, options));
+                }
+                return true;
+            })()
+        """)
+
+        if not opened:
+            print("[Bilibili] 未找到封面设置入口，跳过")
             return
 
-        # 设置文件路径
+        self.cdp.sleep(1.2)
+
+        document = self.cdp.send("DOM.getDocument", {
+            "depth": -1,
+            "pierce": True,
+        })
+        root_id = document.get("root", {}).get("nodeId")
+        if not root_id:
+            print("[Bilibili] 未能读取封面编辑器 DOM，跳过")
+            return
+
+        query = self.cdp.send("DOM.querySelector", {
+            "nodeId": root_id,
+            "selector": '.cover-editor input[type="file"][accept*="image"]',
+        })
+        node_id = query.get("nodeId")
+        if not node_id:
+            print("[Bilibili] 未找到封面编辑器图片上传输入框，跳过")
+            return
+
         self.cdp.send("DOM.setFileInputFiles", {
             "files": [cover_path],
-            "nodeId": cover_input["nodeId"],
+            "nodeId": node_id,
         })
 
+        self.cdp.sleep(2.5)
+
+        has_preview = self.cdp.evaluate(r"""
+            (() => Array.from(document.querySelectorAll('.cover-editor img')).some((img) =>
+                img.src.startsWith('blob:') && img.naturalWidth > 0 && img.naturalHeight > 0
+            ))()
+        """)
+        if not has_preview:
+            print("[Bilibili] 封面上传后未检测到预览图，请发布前人工检查")
+
+        completed = self.cdp.evaluate(r"""
+            (() => {
+                const candidates = Array.from(document.querySelectorAll(
+                    '.cover-editor .submit, .cover-editor button, .cover-editor div'
+                ));
+                const target = candidates.find((el) => {
+                    const text = (el.innerText || el.textContent || '').trim();
+                    const r = el.getBoundingClientRect();
+                    return text === '完成' && r.width > 0 && r.height > 0;
+                });
+                if (!target) return false;
+                const r = target.getBoundingClientRect();
+                const options = {
+                    bubbles: true,
+                    cancelable: true,
+                    clientX: r.x + r.width / 2,
+                    clientY: r.y + r.height / 2,
+                    view: window,
+                };
+                for (const type of ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+                    target.dispatchEvent(new MouseEvent(type, options));
+                }
+                return true;
+            })()
+        """)
+        if not completed:
+            print("[Bilibili] 未找到封面编辑器完成按钮，请发布前人工确认")
+            return
+
         self.cdp.sleep(2)
+        print("[Bilibili] 封面上传完成")
 
     def _click_publish(self):
         """点击发布按钮"""
