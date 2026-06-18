@@ -38,7 +38,7 @@ SELECTORS = {
     "title_input": 'input[placeholder*="标题"], .input-title input',
 
     # 简介输入框（上传后动态出现）
-    "content_input": 'textarea[placeholder*="简介"], .input-desc textarea',
+    "content_input": '.ql-editor[contenteditable="true"], textarea[placeholder*="简介"], .input-desc textarea',
 
     # 标签输入（上传后动态出现）
     "tag_input": 'input[placeholder*="标签"], .tag-input input',

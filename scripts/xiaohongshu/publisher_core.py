@@ -105,11 +105,43 @@ class XiaohongshuPublisherCore(BasePublisher):
             True: 已登录
             False: 未登录
         """
-        return self.login.check_login_by_url_redirect(
-            check_url=XHS_CREATOR_LOGIN_CHECK_URL,
-            login_keyword="login",
-            scope="creator",
+        cached_status = self.login.get_cached_status("creator")
+        if cached_status is not None:
+            return cached_status
+
+        self.cdp.navigate(XHS_CREATOR_URL)
+        self.cdp.sleep(PAGE_LOAD_WAIT, minimum_seconds=1.0)
+
+        current_url = self.cdp.get_current_url()
+        print(f"[XHS Publisher] 当前 URL: {current_url}")
+        if "login" in current_url.lower():
+            self.login.set_cache("creator", logged_in=False)
+            print("[XHS Publisher] 未登录：发布页跳转到登录页")
+            return False
+
+        page_state = self.cdp.evaluate("""
+            (() => {
+                const text = document.body ? document.body.innerText : '';
+                return {
+                    hasPublishShell: text.includes('发布笔记') || text.includes('上传视频'),
+                    hasUploadInput: !!document.querySelector('input[type="file"], input.upload-input'),
+                    hasLoginButton: text.includes('短信登录') && text.includes('登 录')
+                };
+            })()
+        """) or {}
+
+        logged_in = bool(
+            page_state.get("hasPublishShell")
+            and page_state.get("hasUploadInput")
+            and not page_state.get("hasLoginButton")
         )
+        self.login.set_cache("creator", logged_in=logged_in)
+        print("[XHS Publisher] 已登录" if logged_in else "[XHS Publisher] 未登录")
+        return logged_in
+
+    def _evaluate(self, expression: str):
+        """兼容 publish_pipeline 中的小红书话题选择逻辑。"""
+        return self.cdp.evaluate(expression)
 
     def check_home_login(self) -> bool:
         """

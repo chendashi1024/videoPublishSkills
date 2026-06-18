@@ -166,6 +166,292 @@ def _append_topic_tags_to_content(content: str, topic_tags: list[str]) -> str:
     return f"{body}\n\n{tag_line}"
 
 
+def _send_cdp(publisher, method: str, params: dict | None = None):
+    """兼容新旧发布器的 CDP send 入口。"""
+    cdp = getattr(publisher, "cdp", None)
+    if cdp is not None and hasattr(cdp, "send"):
+        return cdp.send(method, params or {})
+    if hasattr(publisher, "_send"):
+        return publisher._send(method, params or {})
+    raise RuntimeError("publisher does not expose a CDP send method")
+
+
+def _cdp_click_rect(
+    publisher,
+    rect: dict,
+    timing_jitter: float = 0.25,
+):
+    """用真实 CDP 鼠标事件点击矩形中心。"""
+    x = float(rect["x"]) + float(rect.get("w", rect.get("width", 0))) / 2
+    y = float(rect["y"]) + float(rect.get("h", rect.get("height", 0))) / 2
+    _send_cdp(publisher, "Input.dispatchMouseEvent", {
+        "type": "mouseMoved",
+        "x": x,
+        "y": y,
+    })
+    time.sleep(_jitter_seconds(0.08, timing_jitter, minimum_seconds=0.03))
+    for event_type in ("mousePressed", "mouseReleased"):
+        _send_cdp(publisher, "Input.dispatchMouseEvent", {
+            "type": event_type,
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1,
+        })
+        time.sleep(0.04)
+
+
+def _upload_file_to_selectors(
+    publisher,
+    selectors: list[str],
+    file_path: str,
+) -> bool:
+    """把文件设置到第一个匹配的 file input。"""
+    doc = _send_cdp(publisher, "DOM.getDocument")
+    root_node_id = doc["root"]["nodeId"]
+
+    for selector in selectors:
+        result = _send_cdp(publisher, "DOM.querySelectorAll", {
+            "nodeId": root_node_id,
+            "selector": selector,
+        })
+        node_ids = result.get("nodeIds") or []
+        for node_id in node_ids:
+            _send_cdp(publisher, "DOM.setFileInputFiles", {
+                "files": [file_path],
+                "nodeId": node_id,
+            })
+            return True
+    return False
+
+
+def _upload_file_to_all_matching_inputs(
+    publisher,
+    selector: str,
+    file_path: str,
+):
+    """部分上传组件有多个隐藏 input，逐个设置更稳。"""
+    doc = _send_cdp(publisher, "DOM.getDocument")
+    root_node_id = doc["root"]["nodeId"]
+    result = _send_cdp(publisher, "DOM.querySelectorAll", {
+        "nodeId": root_node_id,
+        "selector": selector,
+    })
+    node_ids = result.get("nodeIds") or []
+    for node_id in node_ids:
+        _send_cdp(publisher, "DOM.setFileInputFiles", {
+            "files": [file_path],
+            "nodeId": node_id,
+        })
+        time.sleep(0.8)
+    return bool(node_ids)
+
+
+def _upload_xiaohongshu_video_cover(
+    publisher,
+    cover_path: str,
+    timing_jitter: float = 0.25,
+):
+    """设置小红书视频 3:4 竖屏封面。"""
+    print(f"[pipeline] Step 4.2: Uploading Xiaohongshu 3:4 cover: {cover_path}")
+
+    cover_rect = publisher._evaluate(r"""
+        (() => {
+            const selectors = [
+                '.cover-plugin-preview .cover .default',
+                '.cover-plugin-preview .default.row',
+                '.publish-page-content-cover .default',
+                '.cover-plugin-preview [style*="background-image"]'
+            ];
+            for (const selector of selectors) {
+                const el = document.querySelector(selector);
+                if (!el) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) {
+                    return { x: r.x, y: r.y, w: r.width, h: r.height };
+                }
+            }
+            return null;
+        })()
+    """)
+    if not cover_rect:
+        print("[pipeline] Warning: Xiaohongshu cover preview not found.")
+        return
+
+    _cdp_click_rect(publisher, cover_rect, timing_jitter)
+    time.sleep(_jitter_seconds(1.3, timing_jitter, minimum_seconds=0.8))
+
+    ratio_rect = publisher._evaluate(r"""
+        (() => {
+            const el = document.querySelector('.cover-modal .ratio-select, .d-modal .ratio-select');
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0
+                ? { x: r.x, y: r.y, w: r.width, h: r.height }
+                : null;
+        })()
+    """)
+    if ratio_rect:
+        _cdp_click_rect(publisher, ratio_rect, timing_jitter)
+        time.sleep(_jitter_seconds(0.4, timing_jitter, minimum_seconds=0.2))
+        vertical_ratio_rect = publisher._evaluate(r"""
+            (() => {
+                const el = document.querySelector('.ratio-select-menu .ratio-item.ratio-3-4');
+                if (!el) return null;
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0
+                    ? { x: r.x, y: r.y, w: r.width, h: r.height }
+                    : null;
+            })()
+        """)
+        if vertical_ratio_rect:
+            _cdp_click_rect(publisher, vertical_ratio_rect, timing_jitter)
+            time.sleep(_jitter_seconds(0.5, timing_jitter, minimum_seconds=0.25))
+
+    uploaded = _upload_file_to_selectors(
+        publisher,
+        [
+            '.cover-modal input[type="file"][accept*="image"]',
+            '.d-modal input[type="file"][accept*="image"]',
+        ],
+        cover_path,
+    )
+    if not uploaded:
+        print("[pipeline] Warning: Xiaohongshu cover image input not found.")
+        return
+
+    time.sleep(_jitter_seconds(2.5, timing_jitter, minimum_seconds=1.5))
+    confirm_rect = publisher._evaluate(r"""
+        (() => {
+            const buttons = Array.from(document.querySelectorAll('.cover-modal button, .d-modal button'));
+            for (const btn of buttons) {
+                const text = (btn.innerText || btn.textContent || '').trim();
+                if (text === '确定') {
+                    const r = btn.getBoundingClientRect();
+                    return { x: r.x, y: r.y, w: r.width, h: r.height };
+                }
+            }
+            return null;
+        })()
+    """)
+    if confirm_rect:
+        _cdp_click_rect(publisher, confirm_rect, timing_jitter)
+        time.sleep(_jitter_seconds(2.0, timing_jitter, minimum_seconds=1.0))
+
+    ok = publisher._evaluate(r"""
+        (() => {
+            const cover = document.querySelector('.publish-page-content-cover .default');
+            if (!cover) return false;
+            const r = cover.getBoundingClientRect();
+            const style = cover.getAttribute('style') || '';
+            return r.width > 0 && r.height > 0 && (r.height > r.width || style.includes('0.75 / 1'));
+        })()
+    """)
+    print("[pipeline] Xiaohongshu cover uploaded." if ok else "[pipeline] Warning: Xiaohongshu cover upload was not verified.")
+
+
+def _upload_douyin_vertical_cover(
+    publisher,
+    cover_path: str,
+    timing_jitter: float = 0.25,
+):
+    """设置抖音竖封面，必要时跳过横封面追加提示。"""
+    print(f"[pipeline] Step 4.2: Uploading Douyin vertical cover: {cover_path}")
+
+    vertical_card_rect = publisher._evaluate(r"""
+        (() => {
+            const cards = Array.from(document.querySelectorAll('.coverControl-CjlzqC'));
+            for (const card of cards) {
+                const text = (card.innerText || card.textContent || '').trim();
+                const r = card.getBoundingClientRect();
+                if (text.includes('竖封面3:4') && r.width > 0 && r.height > 0) {
+                    return { x: r.x, y: r.y, w: r.width, h: r.height };
+                }
+            }
+            return null;
+        })()
+    """)
+    if not vertical_card_rect:
+        print("[pipeline] Warning: Douyin vertical cover card not found.")
+        return
+
+    _cdp_click_rect(publisher, vertical_card_rect, timing_jitter)
+    time.sleep(_jitter_seconds(1.8, timing_jitter, minimum_seconds=1.0))
+
+    uploaded = _upload_file_to_all_matching_inputs(
+        publisher,
+        '.dy-creator-content-modal input[type="file"][accept*="image"], '
+        '.dy-creator-content-modal-wrap input[type="file"][accept*="image"]',
+        cover_path,
+    )
+    if not uploaded:
+        print("[pipeline] Warning: Douyin cover image input not found.")
+        return
+
+    deadline = time.time() + 20
+    complete_rect = None
+    while time.time() < deadline:
+        complete_rect = publisher._evaluate(r"""
+            (() => {
+                const buttons = Array.from(document.querySelectorAll(
+                    '.dy-creator-content-modal button, .dy-creator-content-modal-wrap button'
+                ));
+                for (const btn of buttons) {
+                    const text = (btn.innerText || btn.textContent || '').trim();
+                    const disabled = btn.disabled
+                        || btn.className.includes('disabled')
+                        || btn.getAttribute('aria-disabled') === 'true';
+                    if (text === '完成' && !disabled) {
+                        const r = btn.getBoundingClientRect();
+                        return { x: r.x, y: r.y, w: r.width, h: r.height };
+                    }
+                }
+                return null;
+            })()
+        """)
+        if complete_rect:
+            break
+        time.sleep(0.8)
+
+    if not complete_rect:
+        print("[pipeline] Warning: Douyin cover complete button did not become enabled.")
+        return
+
+    _cdp_click_rect(publisher, complete_rect, timing_jitter)
+    time.sleep(_jitter_seconds(2.0, timing_jitter, minimum_seconds=1.0))
+
+    skip_rect = publisher._evaluate(r"""
+        (() => {
+            const nodes = Array.from(document.querySelectorAll('button, div, span'));
+            for (const el of nodes) {
+                const text = (el.innerText || el.textContent || '').trim();
+                const r = el.getBoundingClientRect();
+                if (text === '暂不设置' && r.width > 0 && r.height > 0) {
+                    return { x: r.x, y: r.y, w: r.width, h: r.height };
+                }
+            }
+            return null;
+        })()
+    """)
+    if skip_rect:
+        _cdp_click_rect(publisher, skip_rect, timing_jitter)
+        time.sleep(_jitter_seconds(2.0, timing_jitter, minimum_seconds=1.0))
+
+    ok = publisher._evaluate(r"""
+        (() => {
+            const cards = Array.from(document.querySelectorAll('.coverControl-CjlzqC'));
+            const vertical = cards.find((card) => (card.innerText || card.textContent || '').includes('竖封面3:4'));
+            if (!vertical) return false;
+            return Array.from(vertical.querySelectorAll('[style*="background-image"]'))
+                .some((el) => {
+                    const style = el.getAttribute('style') || '';
+                    return style.includes('url(') && !style.includes('background-image: none');
+                });
+        })()
+    """)
+    print("[pipeline] Douyin vertical cover uploaded." if ok else "[pipeline] Warning: Douyin vertical cover upload was not verified.")
+
+
 def _verify_local_files_exist(
     file_paths: list[str],
     media_label: str,
@@ -190,122 +476,163 @@ def _select_topics(
     tags: list[str],
     timing_jitter: float = 0.25,
 ):
-    """Type each tag, wait for suggestions, then confirm with Enter."""
+    """在小红书正文末尾逐个选择平台话题，生成蓝色 tiptap-topic 节点。"""
     if not tags:
         return
 
     print(f"[pipeline] Step 4.1: Selecting {len(tags)} topic tag(s)...")
     failed_tags = []
 
+    def _cdp_send(method: str, params: dict | None = None):
+        cdp = getattr(publisher, "cdp", None)
+        if cdp is not None and hasattr(cdp, "send"):
+            return cdp.send(method, params or {})
+        if hasattr(publisher, "_send"):
+            return publisher._send(method, params or {})
+        raise RuntimeError("publisher does not expose a CDP send method")
+
+    def _insert_text(text: str):
+        _cdp_send("Input.insertText", {"text": text})
+
+    def _press_enter():
+        event = {
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+            "nativeVirtualKeyCode": 13,
+        }
+        _cdp_send("Input.dispatchKeyEvent", {"type": "keyDown", **event})
+        _cdp_send("Input.dispatchKeyEvent", {"type": "keyUp", **event})
+
+    def _click_center(rect: dict):
+        x = float(rect["x"]) + float(rect["w"]) / 2
+        y = float(rect["y"]) + float(rect["h"]) / 2
+        _cdp_send("Input.dispatchMouseEvent", {
+            "type": "mouseMoved",
+            "x": x,
+            "y": y,
+        })
+        time.sleep(_jitter_seconds(0.08, timing_jitter, minimum_seconds=0.03))
+        for event_type in ("mousePressed", "mouseReleased"):
+            _cdp_send("Input.dispatchMouseEvent", {
+                "type": event_type,
+                "x": x,
+                "y": y,
+                "button": "left",
+                "clickCount": 1,
+            })
+            time.sleep(0.04)
+
+    def _move_caret_to_editor_end():
+        return publisher._evaluate("""
+            (() => {
+                const editor = document.querySelector(
+                    'div.tiptap.ProseMirror, div.ProseMirror[contenteditable="true"]'
+                );
+                if (!editor) {
+                    return false;
+                }
+                editor.focus();
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(editor);
+                range.collapse(false);
+                selection.removeAllRanges();
+                selection.addRange(range);
+                return true;
+            })()
+        """)
+
+    def _topic_names() -> list[str]:
+        return publisher._evaluate(r"""
+            (() => {
+                const editor = document.querySelector(
+                    'div.tiptap.ProseMirror, div.ProseMirror[contenteditable="true"]'
+                );
+                if (!editor) {
+                    return [];
+                }
+                return Array.from(editor.querySelectorAll('a.tiptap-topic')).map((a) => {
+                    try {
+                        const data = JSON.parse(a.getAttribute('data-topic') || '{}');
+                        if (data.name) return data.name;
+                    } catch (e) {}
+                    return (a.innerText || '')
+                        .replace(/^#/, '')
+                        .replace(/\[话题\]#?$/, '')
+                        .trim();
+                });
+            })()
+        """) or []
+
+    def _find_topic_candidate(tag: str) -> dict | None:
+        return publisher._evaluate(f"""
+            (() => {{
+                const wanted = {json.dumps("#" + tag)};
+                const items = Array.from(document.querySelectorAll(
+                    '.tippy-box .item, [role="tooltip"] .item'
+                ));
+                const mapped = items.map((el, idx) => {{
+                    const text = (el.innerText || el.textContent || '').trim();
+                    const first = text.split('\\n')[0].trim();
+                    const r = el.getBoundingClientRect();
+                    return {{
+                        idx,
+                        text,
+                        first,
+                        x: r.x,
+                        y: r.y,
+                        w: r.width,
+                        h: r.height,
+                        selected: el.classList.contains('is-selected'),
+                    }};
+                }}).filter((item) => item.w > 0 && item.h > 0);
+                return (
+                    mapped.find((item) => item.first === wanted)
+                    || mapped.find((item) => item.selected)
+                    || mapped[0]
+                    || null
+                );
+            }})()
+        """)
+
+    if not _move_caret_to_editor_end():
+        print("[pipeline] Warning: Xiaohongshu topic editor not found.")
+        return
+
+    _press_enter()
+    time.sleep(_jitter_seconds(0.25, timing_jitter, minimum_seconds=0.12))
+
     for index, tag in enumerate(tags):
         normalized_tag = tag.lstrip("#").strip()
         if not normalized_tag:
             continue
 
-        hash_pause_ms = _jitter_ms(180, timing_jitter, minimum_ms=90)
-        char_delay_min_ms = _jitter_ms(45, timing_jitter, minimum_ms=25)
-        char_delay_max_ms = _jitter_ms(95, timing_jitter, minimum_ms=char_delay_min_ms)
-        suggest_wait_ms = _jitter_ms(3000, timing_jitter, minimum_ms=1600)
-        after_enter_ms = _jitter_ms(260, timing_jitter, minimum_ms=120)
+        _move_caret_to_editor_end()
+        _insert_text("#" + normalized_tag)
+        time.sleep(_jitter_seconds(1.8, timing_jitter, minimum_seconds=1.1))
 
-        escaped_tag = json.dumps(normalized_tag)
-        newline_literal = json.dumps("\n")
-        hash_literal = json.dumps("#")
-        space_literal = json.dumps(" ")
-        result = publisher._evaluate(f"""
-            (async function() {{
-                var editor = document.querySelector(
-                    'div.tiptap.ProseMirror, div.ProseMirror[contenteditable="true"]'
-                );
-                if (!editor) {{
-                    return {{ ok: false, reason: 'editor_not_found' }};
-                }}
-
-                function sleep(ms) {{
-                    return new Promise(function(resolve) {{ setTimeout(resolve, ms); }});
-                }}
-
-                function moveCaretToEditorEnd(el) {{
-                    el.focus();
-                    var selection = window.getSelection();
-                    if (!selection) return;
-                    var range = document.createRange();
-                    range.selectNodeContents(el);
-                    range.collapse(false);
-                    selection.removeAllRanges();
-                    selection.addRange(range);
-                }}
-
-                function insertTextAtCaret(text) {{
-                    var inserted = false;
-                    try {{
-                        inserted = document.execCommand('insertText', false, text);
-                    }} catch (e) {{}}
-
-                    if (!inserted) {{
-                        var selection = window.getSelection();
-                        if (selection && selection.rangeCount > 0) {{
-                            var range = selection.getRangeAt(0);
-                            var node = document.createTextNode(text);
-                            range.insertNode(node);
-                            range.setStartAfter(node);
-                            range.collapse(true);
-                            selection.removeAllRanges();
-                            selection.addRange(range);
-                        }} else {{
-                            editor.appendChild(document.createTextNode(text));
-                        }}
-                    }}
-                    editor.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                }}
-
-                function pressEnter(el) {{
-                    var evt = {{
-                        key: 'Enter',
-                        code: 'Enter',
-                        keyCode: 13,
-                        which: 13,
-                        bubbles: true,
-                        cancelable: true,
-                    }};
-                    el.dispatchEvent(new KeyboardEvent('keydown', evt));
-                    el.dispatchEvent(new KeyboardEvent('keypress', evt));
-                    el.dispatchEvent(new KeyboardEvent('keyup', evt));
-                }}
-
-                moveCaretToEditorEnd(editor);
-                if ({index} === 0) {{
-                    insertTextAtCaret({newline_literal});
-                }}
-                insertTextAtCaret({hash_literal});
-                await sleep({hash_pause_ms});
-
-                var tagText = {escaped_tag};
-                var charDelayMin = {char_delay_min_ms};
-                var charDelayMax = {char_delay_max_ms};
-                for (var i = 0; i < tagText.length; i++) {{
-                    insertTextAtCaret(tagText[i]);
-                    var charDelay = Math.floor(Math.random() * (charDelayMax - charDelayMin + 1)) + charDelayMin;
-                    await sleep(charDelay);
-                }}
-
-                await sleep({suggest_wait_ms});
-                pressEnter(editor);
-                await sleep({after_enter_ms});
-                insertTextAtCaret({space_literal});
-                return {{ ok: true, selected: true }};
-            }})()
-        """)
-
-        if not (isinstance(result, dict) and result.get("ok")):
-            failed_tags.append(tag)
-            reason = result.get("reason") if isinstance(result, dict) else "unknown"
-            print(f"[pipeline] Warning: Failed to select topic {tag} ({reason}).")
+        candidate = _find_topic_candidate(normalized_tag)
+        if candidate:
+            _click_center(candidate)
         else:
-            print(f"[pipeline] Topic selected: {tag}")
+            _press_enter()
+        time.sleep(_jitter_seconds(0.9, timing_jitter, minimum_seconds=0.45))
 
+        existing_after = set(_topic_names())
+        if normalized_tag in existing_after:
+            print(f"[pipeline] Topic selected: {tag}")
+        else:
+            failed_tags.append(tag)
+            print(
+                f"[pipeline] Warning: Failed to select topic {tag}. "
+                f"Current topics: {', '.join(sorted(existing_after)) or '(none)'}"
+            )
+
+        _move_caret_to_editor_end()
+        _insert_text(" ")
         if index < len(tags) - 1:
-            time.sleep(_jitter_seconds(0.45, timing_jitter, minimum_seconds=0.2))
+            time.sleep(_jitter_seconds(0.35, timing_jitter, minimum_seconds=0.15))
 
     if failed_tags:
         print(
@@ -512,8 +839,8 @@ def main():
 
     # 根据平台动态加载 Publisher
     if platform == "xiaohongshu":
-        from cdp_publish import XiaohongshuPublisher
-        publisher = XiaohongshuPublisher(
+        from xiaohongshu.publisher_core import XiaohongshuPublisherCore
+        publisher = XiaohongshuPublisherCore(
             host=host,
             port=port,
             timing_jitter=timing_jitter,
@@ -622,7 +949,7 @@ def main():
 
     # --- Step 4: Fill form ---
     print("[pipeline] Step 4: Filling form...")
-    # 小红书通过话题选择器单独确认话题；其他平台把话题行保留在正文/简介底部。
+    # 小红书话题必须走平台联想选择器，普通 #文本 不会生成有效话题节点。
     platform_content = content
     if platform in {"douyin", "kuaishou", "bilibili"}:
         platform_content = content_with_topic_tags
@@ -634,14 +961,12 @@ def main():
                 "content": platform_content,
                 "video_path": video_path,
             }
-            if platform != "xiaohongshu":
+            if platform in {"bilibili", "kuaishou"}:
                 publish_video_kwargs["cover_path"] = cover_path
                 publish_video_kwargs["auto_publish"] = False
-            elif cover_path:
-                print(
-                    "[pipeline] Warning: Xiaohongshu video cover upload is not implemented yet; "
-                    "please set the cover manually before publishing."
-                )
+            elif platform == "douyin":
+                # 抖音封面需要走新版封面弹窗，填稿后单独处理。
+                publish_video_kwargs["auto_publish"] = False
 
             publisher.publish_video(**publish_video_kwargs)
         else:
@@ -649,7 +974,20 @@ def main():
                 title=title, content=platform_content, image_paths=image_paths
             )
 
-        # 小红书特定：选择话题标签
+        if is_video_mode and cover_path:
+            if platform == "xiaohongshu":
+                _upload_xiaohongshu_video_cover(
+                    publisher,
+                    cover_path,
+                    timing_jitter=timing_jitter,
+                )
+            elif platform == "douyin":
+                _upload_douyin_vertical_cover(
+                    publisher,
+                    cover_path,
+                    timing_jitter=timing_jitter,
+                )
+
         if platform == "xiaohongshu" and topic_tags:
             _select_topics(publisher, topic_tags, timing_jitter=timing_jitter)
 

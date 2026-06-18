@@ -99,7 +99,7 @@ SELECTORS = {
 PAGE_LOAD_WAIT = 3  # 页面加载等待时间
 TAB_CLICK_WAIT = 2  # 点击标签页后等待时间
 UPLOAD_WAIT = 6  # 上传后等待编辑器出现的时间
-VIDEO_PROCESS_TIMEOUT = 120  # 视频处理超时时间
+VIDEO_PROCESS_TIMEOUT = 300  # 视频处理超时时间
 VIDEO_PROCESS_POLL = 3  # 视频处理状态轮询间隔
 ACTION_INTERVAL = 1  # 操作间隔时间
 

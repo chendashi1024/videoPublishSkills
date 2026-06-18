@@ -28,10 +28,16 @@ _current_account: Optional[str] = None
 
 
 def get_chrome_path() -> str:
-    """Find Chrome executable on Windows/macOS/Linux."""
+    """Find Chrome/Edge executable on Windows/macOS/Linux."""
     candidates = []
 
     if sys.platform == "win32":
+        for env_var in ("PROGRAMFILES", "PROGRAMFILES(X86)"):
+            base = os.environ.get(env_var, "")
+            if base:
+                candidates.append(
+                    os.path.join(base, "Microsoft", "Edge", "Application", "msedge.exe")
+                )
         for env_var in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
             base = os.environ.get(env_var, "")
             if base:
@@ -41,6 +47,8 @@ def get_chrome_path() -> str:
     elif sys.platform == "darwin":
         candidates.extend(
             [
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+                os.path.expanduser("~/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
                 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
                 os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
             ]
@@ -48,6 +56,8 @@ def get_chrome_path() -> str:
     else:
         candidates.extend(
             [
+                "/usr/bin/microsoft-edge",
+                "/usr/bin/microsoft-edge-stable",
                 "/usr/bin/google-chrome",
                 "/usr/bin/google-chrome-stable",
                 "/usr/bin/chromium-browser",
@@ -61,7 +71,9 @@ def get_chrome_path() -> str:
 
     import shutil
     found = (
-        shutil.which("google-chrome")
+        shutil.which("microsoft-edge")
+        or shutil.which("microsoft-edge-stable")
+        or shutil.which("google-chrome")
         or shutil.which("google-chrome-stable")
         or shutil.which("chromium-browser")
         or shutil.which("chromium")
@@ -72,20 +84,27 @@ def get_chrome_path() -> str:
         return found
 
     raise FileNotFoundError(
-        "Chrome not found. Please install Google Chrome or set its path manually."
+        "Chrome/Edge not found. Please install Microsoft Edge or Google Chrome."
     )
 
 
 def get_user_data_dir(account: Optional[str] = None) -> str:
     """
-    Return the Chrome profile directory path for a given account.
+    Return the Chrome/Edge profile directory path for a given account.
 
     Args:
         account: Account name. If None, uses the default account from account_manager.
+                 Special account "edge" uses the Edge profile shared by existing
+                 Moqijob publishing flow.
 
     Returns:
-        Path to the Chrome user-data-dir for this account.
+        Path to the browser user-data-dir for this account.
     """
+    if account == "edge":
+        profile_dir = "/Users/chenchen/Documents/cc-code/XiaohongshuSkills/edge_profile"
+        os.makedirs(profile_dir, exist_ok=True)
+        return profile_dir
+
     try:
         from account_manager import get_profile_dir
         return get_profile_dir(account)
@@ -138,16 +157,21 @@ def launch_chrome(
         chrome_path,
         f"--remote-debugging-port={port}",
         f"--user-data-dir={user_data_dir}",
+        "--no-sandbox",
         "--no-first-run",
         "--no-default-browser-check",
     ]
+
+    if account == "edge":
+        cmd.append("--profile-directory=Default")
 
     if headless:
         cmd.append("--headless=new")
 
     mode_label = "headless" if headless else "headed"
     account_label = account or "default"
-    print(f"[chrome_launcher] Launching Chrome ({mode_label}, account: {account_label})...")
+    browser_name = "Edge" if "Edge" in chrome_path else "Chrome"
+    print(f"[chrome_launcher] Launching {browser_name} ({mode_label}, account: {account_label})...")
     print(f"  executable : {chrome_path}")
     print(f"  profile dir: {user_data_dir}")
     print(f"  debug port : {port}")
