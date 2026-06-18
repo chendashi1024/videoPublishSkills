@@ -45,6 +45,10 @@ SELECTORS = {
 
     # 封面上传
     "cover_upload_input": 'input[type="file"][accept*="image"]',
+    "cover_editor_entry": '[class*="cover-full-editor"], [class*="default-cover"]',
+    "cover_modal": ".ant-modal",
+    "cover_modal_upload_input": '.ant-modal [class*="cropper-upload-upload"] input[type="file"][accept*="image"], .ant-modal input[type="file"][accept*="image"]',
+    "cover_default_image": '[class*="default-cover"] img',
 
     # 发布按钮
     "publish_button": 'button:has-text("发布"), button[class*="publish"]',

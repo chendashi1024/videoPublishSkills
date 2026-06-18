@@ -219,6 +219,26 @@ class KuaishouPublisherCore(BasePublisher):
     # 内部辅助方法
     # ========================================================================
 
+    def _click_rect_center(self, rect: dict[str, float]):
+        """用 CDP 鼠标事件点击矩形中心。"""
+        x = float(rect["x"]) + float(rect.get("w", rect.get("width", 0))) / 2
+        y = float(rect["y"]) + float(rect.get("h", rect.get("height", 0))) / 2
+        self.cdp.send("Input.dispatchMouseEvent", {
+            "type": "mouseMoved",
+            "x": x,
+            "y": y,
+        })
+        time.sleep(0.08)
+        for event_type in ("mousePressed", "mouseReleased"):
+            self.cdp.send("Input.dispatchMouseEvent", {
+                "type": event_type,
+                "x": x,
+                "y": y,
+                "button": "left",
+                "clickCount": 1,
+            })
+            time.sleep(0.04)
+
     def _upload_video(self, video_path: str):
         """上传视频"""
         print(f"[Kuaishou] 上传视频: {video_path}")
@@ -277,20 +297,170 @@ class KuaishouPublisherCore(BasePublisher):
         """上传封面"""
         print(f"[Kuaishou] 上传封面: {cover_path}")
 
-        # 查找封面上传输入框
-        cover_input = self.ui.find_element(SELECTORS["cover_upload_input"])
-        if not cover_input:
-            print("[Kuaishou] 未找到封面上传输入框，跳过")
-            return
+        entry_rect = self.cdp.evaluate(r"""
+            (() => {
+                const candidates = Array.from(document.querySelectorAll(
+                    '[class*="cover-full-editor"], [class*="default-cover"]'
+                ));
+                const target = candidates.find((el) => {
+                    const text = (el.innerText || el.textContent || '').trim();
+                    const r = el.getBoundingClientRect();
+                    return text.includes('封面设置') && r.width > 0 && r.height > 0;
+                });
+                if (!target) return null;
+                target.scrollIntoView({ block: 'center' });
+                const r = target.getBoundingClientRect();
+                return { x: r.x, y: r.y, w: r.width, h: r.height };
+            })()
+        """)
+        if not entry_rect:
+            raise CDPError("未找到快手封面设置入口")
 
-        # 设置文件路径
+        upload_tab_rect = None
+        for attempt in range(3):
+            self._click_rect_center(entry_rect)
+            deadline = time.time() + 6
+            while time.time() < deadline:
+                upload_tab_rect = self.cdp.evaluate(r"""
+                    (() => {
+                        const modal = document.querySelector('.ant-modal');
+                        if (!modal) return null;
+                        const target = Array.from(modal.querySelectorAll('div, span, button')).find((el) => {
+                            const text = (el.innerText || el.textContent || '').trim();
+                            const r = el.getBoundingClientRect();
+                            return text === '上传封面' && r.width > 0 && r.height > 0;
+                        });
+                        if (!target) return null;
+                        const r = target.getBoundingClientRect();
+                        return { x: r.x, y: r.y, w: r.width, h: r.height };
+                    })()
+                """)
+                if upload_tab_rect:
+                    break
+                self.cdp.sleep(0.5)
+            if upload_tab_rect:
+                break
+            if attempt < 2:
+                print("[Kuaishou] 封面编辑器未打开，重试点击封面设置")
+
+        if not upload_tab_rect:
+            raise CDPError("未找到快手封面编辑器的上传封面页签")
+
+        self._click_rect_center(upload_tab_rect)
+        self.cdp.sleep(0.8)
+
+        upload_area_ready = self.ui.wait_for_element(
+            SELECTORS["cover_modal_upload_input"],
+            timeout=6,
+        )
+        if not upload_area_ready:
+            raise CDPError("快手封面编辑器上传区域未出现")
+
+        document = self.cdp.send("DOM.getDocument", {
+            "depth": -1,
+            "pierce": True,
+        })
+        root_id = document.get("root", {}).get("nodeId")
+        if not root_id:
+            raise CDPError("未能读取快手封面编辑器 DOM")
+
+        query = self.cdp.send("DOM.querySelector", {
+            "nodeId": root_id,
+            "selector": SELECTORS["cover_modal_upload_input"],
+        })
+        node_id = query.get("nodeId")
+        if not node_id:
+            raise CDPError("未找到快手封面编辑器图片上传输入框")
+
         self.cdp.send("DOM.setFileInputFiles", {
             "files": [cover_path],
-            "nodeId": cover_input["nodeId"],
+            "nodeId": node_id,
         })
 
-        self.cdp.sleep(2)
-        print("[Kuaishou] 封面上传完成")
+        has_upload_preview = False
+        for _ in range(20):
+            self.cdp.sleep(0.5)
+            has_upload_preview = self.cdp.evaluate(r"""
+                (() => {
+                    const modal = document.querySelector('.ant-modal');
+                    if (!modal) return false;
+                    const canvases = Array.from(modal.querySelectorAll('canvas'));
+                    return canvases.some((canvas) => canvas.width > 0 && canvas.height > 0);
+                })()
+            """)
+            if has_upload_preview:
+                break
+        if not has_upload_preview:
+            raise CDPError("快手封面上传后未检测到裁剪预览")
+
+        ratio_rect = self.cdp.evaluate(r"""
+            (() => {
+                const modal = document.querySelector('.ant-modal');
+                if (!modal) return null;
+                const target = Array.from(modal.querySelectorAll('[class*="ratio-item"], div')).find((el) => {
+                    const text = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ');
+                    const r = el.getBoundingClientRect();
+                    return text.startsWith('3:4') && r.width > 0 && r.height > 0;
+                });
+                if (!target) return null;
+                const r = target.getBoundingClientRect();
+                return { x: r.x, y: r.y, w: r.width, h: r.height };
+            })()
+        """)
+        if ratio_rect:
+            self._click_rect_center(ratio_rect)
+        else:
+            print("[Kuaishou] 未找到 3:4 裁剪比例，保留平台默认裁剪")
+
+        self.cdp.sleep(0.8)
+
+        confirm_rect = None
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            confirm_rect = self.cdp.evaluate(r"""
+                (() => {
+                    const modal = document.querySelector('.ant-modal');
+                    if (!modal) return null;
+                    const target = Array.from(modal.querySelectorAll('button, div, span')).find((el) => {
+                        const text = (el.innerText || el.textContent || '').trim();
+                        const r = el.getBoundingClientRect();
+                        return text === '确认' && r.width > 0 && r.height > 0;
+                    });
+                    const button = target && target.closest('button') ? target.closest('button') : target;
+                    if (!button) return null;
+                    if (button.disabled || button.className.includes('disabled') || button.getAttribute('aria-disabled') === 'true') {
+                        return null;
+                    }
+                    const r = button.getBoundingClientRect();
+                    return { x: r.x, y: r.y, w: r.width, h: r.height };
+                })()
+            """)
+            if confirm_rect:
+                break
+            self.cdp.sleep(0.5)
+
+        if not confirm_rect:
+            raise CDPError("未能点击快手封面编辑器确认按钮")
+
+        self._click_rect_center(confirm_rect)
+
+        applied = False
+        for _ in range(12):
+            self.cdp.sleep(0.6)
+            applied = self.cdp.evaluate(r"""
+                (() => {
+                    if (document.querySelector('.ant-modal-wrap')) return false;
+                    const img = document.querySelector('[class*="default-cover"] img');
+                    return !!img && img.naturalWidth > 0 && img.naturalHeight > img.naturalWidth;
+                })()
+            """)
+            if applied:
+                break
+
+        if not applied:
+            raise CDPError("快手封面上传后未确认应用为竖版封面")
+
+        print("[Kuaishou] 竖版封面已应用（3:4）")
 
     def _click_publish(self):
         """点击发布按钮"""
