@@ -250,6 +250,32 @@ def _cdp_hotkey(publisher, key: str, modifiers: int):
     time.sleep(0.1)
 
 
+def _wait_for_cdp_event(publisher, event_method: str, timeout_seconds: float = 5.0) -> dict | None:
+    """等待一个 CDP 事件；用于 file chooser 这类不能只靠 request/response 的流程。"""
+    cdp = getattr(publisher, "cdp", None)
+    ws = getattr(cdp, "ws", None)
+    if ws is None or not hasattr(ws, "recv"):
+        return None
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        timeout = max(0.1, deadline - time.time())
+        try:
+            raw = ws.recv(timeout=timeout)
+        except TypeError:
+            raw = ws.recv()
+        except Exception:
+            return None
+
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+        if data.get("method") == event_method:
+            return data.get("params", {})
+    return None
+
+
 def _upload_file_to_selectors(
     publisher,
     selectors: list[str],
@@ -298,6 +324,74 @@ def _upload_file_to_all_matching_inputs(
             continue
         time.sleep(0.8)
         return True
+    return False
+
+
+def _upload_douyin_cover_from_modal(
+    publisher,
+    cover_path: str,
+    timing_jitter: float = 0.25,
+) -> bool:
+    """在抖音封面弹窗里通过主上传区上传封面，并让当前裁剪区切到上传图。"""
+    upload_rect = _evaluate_js(publisher, r"""
+        (() => {
+            const candidates = Array.from(document.querySelectorAll(
+                '.dy-creator-content-modal .upload-ZOJTUA, '
+                + '.dy-creator-content-modal-wrap .upload-ZOJTUA'
+            ));
+            for (const el of candidates) {
+                const text = (el.innerText || el.textContent || '').trim();
+                const r = el.getBoundingClientRect();
+                if (text.includes('上传封面') && r.width > 0 && r.height > 0) {
+                    return { x: r.x, y: r.y, w: r.width, h: r.height };
+                }
+            }
+            return null;
+        })()
+    """)
+    if not upload_rect:
+        return False
+
+    _send_cdp(publisher, "Page.enable")
+    _send_cdp(publisher, "DOM.enable")
+    _send_cdp(publisher, "Page.setInterceptFileChooserDialog", {"enabled": True})
+    try:
+        _cdp_click_rect(publisher, upload_rect, timing_jitter)
+        chooser = _wait_for_cdp_event(
+            publisher,
+            "Page.fileChooserOpened",
+            timeout_seconds=5.0,
+        )
+        backend_node_id = (chooser or {}).get("backendNodeId")
+        if not backend_node_id:
+            return False
+
+        _send_cdp(publisher, "DOM.setFileInputFiles", {
+            "backendNodeId": backend_node_id,
+            "files": [cover_path],
+        })
+    finally:
+        _send_cdp(publisher, "Page.setInterceptFileChooserDialog", {"enabled": False})
+
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        uploaded = _evaluate_js(publisher, r"""
+            (() => {
+                const uploadedTile = document.querySelector(
+                    '.dy-creator-content-modal .upload-ZOJTUA [style*="background-image"], '
+                    + '.dy-creator-content-modal-wrap .upload-ZOJTUA [style*="background-image"]'
+                );
+                if (!uploadedTile) return false;
+                const style = uploadedTile.getAttribute('style') || '';
+                return style.includes('data:image') || style.includes('blob:') || style.includes('url(');
+            })()
+        """)
+        if uploaded:
+            # 抖音会在 file chooser 选择完成后把裁剪区切到上传图，稍等预览稳定。
+            time.sleep(_jitter_seconds(1.8, timing_jitter, minimum_seconds=1.0))
+            return True
+        time.sleep(0.8)
+
     return False
 
 
@@ -460,14 +554,13 @@ def _upload_douyin_cover_card(
     _cdp_click_rect(publisher, card_rect, timing_jitter)
     time.sleep(_jitter_seconds(1.8, timing_jitter, minimum_seconds=1.0))
 
-    uploaded = _upload_file_to_all_matching_inputs(
+    uploaded = _upload_douyin_cover_from_modal(
         publisher,
-        '.dy-creator-content-modal input[type="file"][accept*="image"], '
-        '.dy-creator-content-modal-wrap input[type="file"][accept*="image"]',
         cover_path,
+        timing_jitter=timing_jitter,
     )
     if not uploaded:
-        print("[pipeline] Warning: Douyin cover image input not found.")
+        print("[pipeline] Warning: Douyin cover upload area did not accept the image.")
         return False
 
     deadline = time.time() + 20
