@@ -288,12 +288,17 @@ def _upload_file_to_all_matching_inputs(
     })
     node_ids = result.get("nodeIds") or []
     for node_id in node_ids:
-        _send_cdp(publisher, "DOM.setFileInputFiles", {
-            "files": [file_path],
-            "nodeId": node_id,
-        })
+        try:
+            _send_cdp(publisher, "DOM.setFileInputFiles", {
+                "files": [file_path],
+                "nodeId": node_id,
+            })
+        except Exception as exc:
+            print(f"[pipeline] Warning: skipped stale file input node {node_id}: {exc}")
+            continue
         time.sleep(0.8)
-    return bool(node_ids)
+        return True
+    return False
 
 
 def _upload_xiaohongshu_video_cover(
@@ -798,22 +803,71 @@ def _select_douyin_topics(
             }})()
         """)
 
-    def _restore_topic_state(before_names: set[str]) -> set[str]:
-        """撤回本轮失败的话题输入，避免平台自动吸附成错误话题。"""
+    def _restore_topic_state(before_names: set[str], attempted_tag: str) -> set[str]:
+        """只清理本轮失败的话题文本或错误 mention，避免误删已成功话题。"""
         _cdp_press_key(publisher, "Escape")
-        _move_caret_to_editor_end()
-        _cdp_hotkey(publisher, "z", modifiers=4)
+        cleaned_names = _evaluate_js(publisher, f"""
+            (() => {{
+                const editor = document.querySelector('div.editor-kit-container[contenteditable="true"]');
+                if (!editor) return [];
+
+                const allowed = new Set({json.dumps(sorted(before_names), ensure_ascii=False)});
+                const attempted = {json.dumps(attempted_tag, ensure_ascii=False)};
+                const needle = '#' + attempted;
+
+                const normalizeMention = (el) => (el.innerText || el.textContent || '')
+                    .replace(/\\u00a0/g, '')
+                    .replace(/^#/, '')
+                    .trim();
+
+                for (const mention of Array.from(editor.querySelectorAll('[data-mention="#"]'))) {{
+                    const name = normalizeMention(mention);
+                    if (!allowed.has(name)) {{
+                        mention.remove();
+                    }}
+                }}
+
+                const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+                const textNodes = [];
+                while (walker.nextNode()) {{
+                    textNodes.push(walker.currentNode);
+                }}
+
+                for (const node of textNodes) {{
+                    if (node.parentElement && node.parentElement.closest('[data-mention="#"]')) {{
+                        continue;
+                    }}
+                    let value = node.nodeValue || '';
+                    if (!value.includes(needle)) {{
+                        continue;
+                    }}
+                    value = value
+                        .split('\\u00a0' + needle).join('')
+                        .split(' ' + needle).join('')
+                        .split(needle).join('');
+                    node.nodeValue = value;
+                }}
+
+                editor.normalize();
+                editor.dispatchEvent(new InputEvent('input', {{
+                    bubbles: true,
+                    inputType: 'deleteContentBackward',
+                    data: null,
+                }}));
+                editor.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(editor);
+                range.collapse(false);
+                selection.removeAllRanges();
+                selection.addRange(range);
+
+                return Array.from(editor.querySelectorAll('[data-mention="#"]')).map(normalizeMention);
+            }})()
+        """) or []
         time.sleep(_jitter_seconds(0.35, timing_jitter, minimum_seconds=0.2))
-
-        for _ in range(8):
-            current_names = set(_mention_names())
-            if current_names == before_names:
-                return current_names
-            _move_caret_to_editor_end()
-            _cdp_press_key(publisher, "Backspace")
-            time.sleep(_jitter_seconds(0.22, timing_jitter, minimum_seconds=0.12))
-
-        return set(_mention_names())
+        return set(cleaned_names)
 
     if not _move_caret_to_editor_end():
         print("[pipeline] Warning: Douyin topic editor not found.")
@@ -834,7 +888,7 @@ def _select_douyin_topics(
             _cdp_click_rect(publisher, candidate, timing_jitter)
             time.sleep(_jitter_seconds(0.9, timing_jitter, minimum_seconds=0.5))
         else:
-            _restore_topic_state(before_names)
+            _restore_topic_state(before_names, tag)
 
         existing_after = set(_mention_names())
         expected_after = before_names | {tag}
@@ -842,7 +896,7 @@ def _select_douyin_topics(
             print(f"[pipeline] Douyin topic selected: #{tag}")
         else:
             if existing_after != before_names:
-                existing_after = _restore_topic_state(before_names)
+                existing_after = _restore_topic_state(before_names, tag)
             failed_tags.append("#" + tag)
             print(
                 f"[pipeline] Warning: Failed to select Douyin topic #{tag}. "
