@@ -524,35 +524,108 @@ def _click_first_visible_text(
     return True
 
 
-def _upload_douyin_cover_card(
+def _click_douyin_horizontal_cover_prompt(
     publisher,
-    cover_path: str,
-    card_label: str,
+    action_text: str,
     timing_jitter: float = 0.25,
 ) -> bool:
-    """上传抖音指定封面卡片，card_label 为「竖封面3:4」或「横封面4:3」。"""
-    print(f"[pipeline] Step 4.2: Uploading Douyin {card_label} cover: {cover_path}")
-
-    card_rect = _evaluate_js(publisher, f"""
+    """处理抖音竖封面后偶发的横封面引导弹窗。"""
+    rect = _evaluate_js(publisher, f"""
         (() => {{
-            const wanted = {json.dumps(card_label)};
-            const cards = Array.from(document.querySelectorAll('.coverControl-CjlzqC'));
-            for (const card of cards) {{
-                const text = (card.innerText || card.textContent || '').trim();
-                const r = card.getBoundingClientRect();
-                if (text.includes(wanted) && r.width > 0 && r.height > 0) {{
-                    return {{ x: r.x, y: r.y, w: r.width, h: r.height }};
+            const wanted = {json.dumps(action_text)};
+            const dialogs = Array.from(document.querySelectorAll(
+                '.dy-creator-content-modal, .dy-creator-content-modal-wrap, [role="dialog"], body'
+            ));
+            for (const dialog of dialogs) {{
+                const dialogText = (dialog.innerText || dialog.textContent || '').trim();
+                if (
+                    !dialogText.includes('设置横封面获取更多流量')
+                    && !(dialogText.includes('横封面') && dialogText.includes('更多流量'))
+                ) {{
+                    continue;
+                }}
+                const buttons = Array.from(dialog.querySelectorAll('button, div, span'));
+                for (const el of buttons) {{
+                    const text = (el.innerText || el.textContent || '').trim();
+                    if (text !== wanted) continue;
+                    const button = el.closest('button') || el;
+                    const r = button.getBoundingClientRect();
+                    const disabled = button.disabled
+                        || button.getAttribute('aria-disabled') === 'true'
+                        || String(button.className || '').includes('disabled');
+                    if (r.width > 0 && r.height > 0 && !disabled) {{
+                        return {{ x: r.x, y: r.y, w: r.width, h: r.height }};
+                    }}
                 }}
             }}
             return null;
         }})()
     """)
-    if not card_rect:
-        print(f"[pipeline] Warning: Douyin {card_label} cover card not found.")
+    if not rect:
         return False
 
-    _cdp_click_rect(publisher, card_rect, timing_jitter)
-    time.sleep(_jitter_seconds(1.8, timing_jitter, minimum_seconds=1.0))
+    print(f"[pipeline] Douyin horizontal-cover prompt detected, clicking: {action_text}")
+    _cdp_click_rect(publisher, rect, timing_jitter)
+    time.sleep(_jitter_seconds(1.2, timing_jitter, minimum_seconds=0.6))
+    return True
+
+
+def _douyin_cover_modal_is_open_for(
+    publisher,
+    card_label: str,
+) -> bool:
+    """判断抖音封面编辑弹窗是否已经打开在目标封面页。"""
+    return bool(_evaluate_js(publisher, f"""
+        (() => {{
+            const wanted = {json.dumps(card_label.replace('3:4', '').replace('4:3', ''))};
+            const modal = document.querySelector(
+                '.dy-creator-content-modal, .dy-creator-content-modal-wrap'
+            );
+            if (!modal) return false;
+            const r = modal.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) return false;
+            const text = (modal.innerText || modal.textContent || '').trim();
+            return text.includes(wanted);
+        }})()
+    """))
+
+
+def _upload_douyin_cover_card(
+    publisher,
+    cover_path: str,
+    card_label: str,
+    timing_jitter: float = 0.25,
+    horizontal_prompt_action: str | None = None,
+    use_current_modal: bool = False,
+) -> bool:
+    """上传抖音指定封面卡片，card_label 为「竖封面3:4」或「横封面4:3」。"""
+    print(f"[pipeline] Step 4.2: Uploading Douyin {card_label} cover: {cover_path}")
+
+    modal_already_open = use_current_modal or _douyin_cover_modal_is_open_for(
+        publisher,
+        card_label,
+    )
+    if not modal_already_open:
+        card_rect = _evaluate_js(publisher, f"""
+            (() => {{
+                const wanted = {json.dumps(card_label)};
+                const cards = Array.from(document.querySelectorAll('.coverControl-CjlzqC'));
+                for (const card of cards) {{
+                    const text = (card.innerText || card.textContent || '').trim();
+                    const r = card.getBoundingClientRect();
+                    if (text.includes(wanted) && r.width > 0 && r.height > 0) {{
+                        return {{ x: r.x, y: r.y, w: r.width, h: r.height }};
+                    }}
+                }}
+                return null;
+            }})()
+        """)
+        if not card_rect:
+            print(f"[pipeline] Warning: Douyin {card_label} cover card not found.")
+            return False
+
+        _cdp_click_rect(publisher, card_rect, timing_jitter)
+        time.sleep(_jitter_seconds(1.8, timing_jitter, minimum_seconds=1.0))
 
     uploaded = _upload_douyin_cover_from_modal(
         publisher,
@@ -566,6 +639,15 @@ def _upload_douyin_cover_card(
     deadline = time.time() + 20
     complete_rect = None
     while time.time() < deadline:
+        if horizontal_prompt_action and _click_douyin_horizontal_cover_prompt(
+            publisher,
+            horizontal_prompt_action,
+            timing_jitter,
+        ):
+            if horizontal_prompt_action == "设置横封面":
+                return True
+            complete_rect = None
+
         complete_rect = _evaluate_js(publisher, r"""
             (() => {
                 const buttons = Array.from(document.querySelectorAll(
@@ -628,16 +710,27 @@ def _upload_douyin_covers(
         vertical_cover_path,
         "竖封面3:4",
         timing_jitter=timing_jitter,
+        horizontal_prompt_action="设置横封面" if horizontal_cover_path else "暂不设置",
     )
 
     if horizontal_cover_path:
+        prompt_clicked = _click_douyin_horizontal_cover_prompt(
+            publisher,
+            "设置横封面",
+            timing_jitter,
+        )
         _upload_douyin_cover_card(
             publisher,
             horizontal_cover_path,
             "横封面4:3",
             timing_jitter=timing_jitter,
+            use_current_modal=prompt_clicked,
         )
-    elif vertical_ok and _click_first_visible_text(publisher, "暂不设置", timing_jitter):
+    elif _click_douyin_horizontal_cover_prompt(
+        publisher,
+        "暂不设置",
+        timing_jitter,
+    ) or (vertical_ok and _click_first_visible_text(publisher, "暂不设置", timing_jitter)):
         time.sleep(_jitter_seconds(2.0, timing_jitter, minimum_seconds=1.0))
 
 

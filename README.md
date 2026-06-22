@@ -222,6 +222,7 @@ python scripts/publish_pipeline.py [选项]
 说明：当 `--host` 非 `127.0.0.1/localhost` 时为远程模式，会跳过本地 `chrome_launcher.py` 的自动启动/重启逻辑，请确保远程 CDP 地址可达。
 说明：当控制端运行在 WSL、但媒体路径使用 Windows/UNC（如 `\\wsl.localhost\...`）时，可加 `--skip-file-check` 跳过 Linux 侧 `isfile` 预校验。
 说明：`publish_pipeline.py` 默认会自动点击发布；如需人工确认，请显式加 `--preview`。OPC 视频工作流必须使用 `--preview`，只填稿不自动发布。
+说明：抖音竖封面上传后可能弹出“设置横封面获取更多流量”引导。流程会按需处理：有横封面时点击“设置横封面”继续上传横封面，没有横封面时点击“暂不设置”；没弹窗则跳过。
 
 ### cdp_publish.py
 
