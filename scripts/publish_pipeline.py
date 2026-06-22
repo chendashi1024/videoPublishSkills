@@ -1264,6 +1264,132 @@ def _select_kuaishou_topics(
         )
 
 
+def _select_bilibili_tags(
+    publisher,
+    tags: list[str],
+    timing_jitter: float = 0.25,
+):
+    """把发布稿里的 B站话题行转成 B站标签栏关键词，不写入简介。"""
+    normalized_tags = []
+    seen = set()
+    for tag in tags:
+        normalized = tag.lstrip("#").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_tags.append(normalized)
+    if not normalized_tags:
+        return
+
+    print(f"[pipeline] Step 4.1: Setting {len(normalized_tags)} Bilibili tag(s)...")
+    _evaluate_js(publisher, """
+        (() => {
+            const el = document.querySelector('#tag-container');
+            if (el) el.scrollIntoView({ block: 'center', inline: 'nearest' });
+        })()
+    """)
+    time.sleep(_jitter_seconds(0.4, timing_jitter, minimum_seconds=0.2))
+
+    for _ in range(10):
+        close_rect = _evaluate_js(publisher, r"""
+            (() => {
+                const visible = (el) => {
+                    if (!el) return false;
+                    const style = getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && rect.width > 0
+                        && rect.height > 0
+                        && rect.bottom >= 0
+                        && rect.top <= innerHeight
+                        && rect.right >= 0
+                        && rect.left <= innerWidth;
+                };
+                const close = Array.from(
+                    document.querySelectorAll('#tag-container .label-item-v2-container .close')
+                ).find(visible);
+                if (!close) return null;
+                const rect = close.getBoundingClientRect();
+                return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
+            })()
+        """)
+        if not close_rect:
+            break
+        _cdp_click_rect(publisher, close_rect, timing_jitter)
+        time.sleep(_jitter_seconds(0.25, timing_jitter, minimum_seconds=0.1))
+
+    for tag in normalized_tags:
+        target = _evaluate_js(publisher, f"""
+            (() => {{
+                const wanted = {json.dumps(tag, ensure_ascii=False)};
+                const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+                const visible = (el) => {{
+                    if (!el) return false;
+                    const style = getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && rect.width > 0
+                        && rect.height > 0
+                        && rect.bottom >= 0
+                        && rect.top <= innerHeight
+                        && rect.right >= 0
+                        && rect.left <= innerWidth;
+                }};
+                const existing = Array.from(
+                    document.querySelectorAll('#tag-container .label-item-v2-container')
+                ).map((el) => clean(el.innerText || el.textContent));
+                if (existing.includes(wanted)) return {{ already: true }};
+                const hot = Array.from(
+                    document.querySelectorAll('.tag-wrp .hot-tag-container, .tag-wrp .hot-tag-item')
+                ).filter(visible).find((el) => clean(el.innerText || el.textContent) === wanted);
+                if (hot) {{
+                    const rect = hot.getBoundingClientRect();
+                    return {{ rect: {{ x: rect.x, y: rect.y, w: rect.width, h: rect.height }} }};
+                }}
+                const input = document.querySelector('#tag-container input.input-val');
+                if (!input) return null;
+                input.scrollIntoView({{ block: 'center', inline: 'nearest' }});
+                input.focus();
+                const rect = input.getBoundingClientRect();
+                return {{
+                    inputRect: {{ x: rect.x, y: rect.y, w: rect.width, h: rect.height }},
+                }};
+            }})()
+        """)
+        if target and target.get("already"):
+            continue
+        if target and target.get("rect"):
+            _cdp_click_rect(publisher, target["rect"], timing_jitter)
+            time.sleep(_jitter_seconds(0.4, timing_jitter, minimum_seconds=0.2))
+        elif target and target.get("inputRect"):
+            _cdp_click_rect(publisher, target["inputRect"], timing_jitter)
+            _cdp_insert_text(publisher, tag)
+            time.sleep(_jitter_seconds(0.2, timing_jitter, minimum_seconds=0.1))
+            _cdp_press_key(publisher, "Enter")
+            time.sleep(_jitter_seconds(0.55, timing_jitter, minimum_seconds=0.25))
+
+    result = _evaluate_js(publisher, r"""
+        (() => {
+            const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+            return Array.from(
+                document.querySelectorAll('#tag-container .label-item-v2-container')
+            ).map((el) => clean(el.innerText || el.textContent));
+        })()
+    """) or []
+    names = set(result)
+    missing = [tag for tag in normalized_tags if tag not in names]
+    for tag in normalized_tags:
+        if tag in names:
+            print(f"[pipeline] Bilibili tag set: {tag}")
+    if missing:
+        print(
+            "[pipeline] Warning: Some Bilibili tags were not set: "
+            f"{', '.join(missing)}"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Multi-platform publish pipeline - unified entry point"
@@ -1586,10 +1712,8 @@ def main():
 
     # --- Step 4: Fill form ---
     print("[pipeline] Step 4: Filling form...")
-    # 抖音、快手、小红书话题必须走平台话题能力，普通 #文本 不会生成有效话题节点。
+    # 抖音、快手、小红书话题必须走平台话题能力；B站标签走标签栏，不追加到简介。
     platform_content = content
-    if platform == "bilibili":
-        platform_content = content_with_topic_tags
 
     try:
         if is_video_mode:
@@ -1621,6 +1745,8 @@ def main():
             _select_kuaishou_topics(publisher, topic_tags)
         elif platform == "xiaohongshu" and topic_tags:
             _select_topics(publisher, topic_tags, timing_jitter=timing_jitter)
+        elif platform == "bilibili" and topic_tags:
+            _select_bilibili_tags(publisher, topic_tags, timing_jitter=timing_jitter)
 
         if is_video_mode and cover_path:
             if platform == "xiaohongshu":
