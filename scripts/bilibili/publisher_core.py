@@ -77,7 +77,7 @@ class BilibiliPublisherCore(BasePublisher):
     def connect(self, reuse_existing_tab: bool = False):
         """连接到 Chrome"""
         self.cdp.connect(
-            target_url_prefix=BILIBILI_CREATOR_URL,
+            target_url_prefix=BILIBILI_CREATOR_URL_PREFIX,
             reuse_existing_tab=reuse_existing_tab,
             default_url=BILIBILI_CREATOR_URL,
         )
@@ -95,16 +95,44 @@ class BilibiliPublisherCore(BasePublisher):
         if not self.cdp.ws:
             raise CDPError("未连接，请先调用 connect()")
 
-        self.cdp.navigate(BILIBILI_CREATOR_LOGIN_CHECK_URL)
-        self.cdp.sleep(PAGE_LOAD_WAIT)
+        current_url = self.cdp.get_current_url()
+        if not current_url.startswith(BILIBILI_CREATOR_URL_PREFIX):
+            self.cdp.navigate(BILIBILI_CREATOR_URL)
+            self.cdp.sleep(PAGE_LOAD_WAIT)
 
-        # 检查是否有登录指示器
-        has_login = self.ui.wait_for_element(
+        current_url = self.cdp.get_current_url()
+        print(f"[Bilibili] 当前 URL: {current_url}")
+        if "login" in current_url.lower() or "passport" in current_url.lower():
+            print("[Bilibili] 未登录：上传页跳转到登录页")
+            return False
+
+        has_login_indicator = self.ui.wait_for_element(
             SELECTORS["login_indicator"],
-            timeout=5,
+            timeout=2,
         )
+        page_state = self.cdp.evaluate("""
+            (() => {
+                const text = document.body ? document.body.innerText : '';
+                return {
+                    hasUploadInput: !!document.querySelector('input[type="file"]'),
+                    hasUploadShell: text.includes('上传视频')
+                        || text.includes('投稿')
+                        || text.includes('上传稿件'),
+                    hasLoginText: text.includes('登录')
+                        && (text.includes('扫码') || text.includes('密码') || text.includes('验证码'))
+                };
+            })()
+        """) or {}
 
-        return has_login
+        logged_in = bool(
+            has_login_indicator
+            or (
+                (page_state.get("hasUploadInput") or page_state.get("hasUploadShell"))
+                and not page_state.get("hasLoginText")
+            )
+        )
+        print("[Bilibili] 已登录" if logged_in else "[Bilibili] 未登录")
+        return logged_in
 
     def open_login_page(self):
         """打开登录页面"""
@@ -176,8 +204,10 @@ class BilibiliPublisherCore(BasePublisher):
 
         try:
             # 1. 导航到发布页面
-            self.cdp.navigate(BILIBILI_CREATOR_URL)
-            self.cdp.sleep(PAGE_LOAD_WAIT)
+            current_url = self.cdp.get_current_url()
+            if not current_url.startswith(BILIBILI_CREATOR_URL_PREFIX):
+                self.cdp.navigate(BILIBILI_CREATOR_URL)
+                self.cdp.sleep(PAGE_LOAD_WAIT)
 
             # 2. 上传视频
             self._upload_video(video_path)
@@ -293,14 +323,24 @@ class BilibiliPublisherCore(BasePublisher):
             )
 
         self.cdp.sleep(ACTION_INTERVAL)
+
     def _select_declaration(self, declaration: str):
         """选择 B站创作声明。"""
         print(f"[Bilibili] 选择创作声明: {declaration}")
 
         result = self.cdp.evaluate(f"""
-            (() => {{
+            (async () => {{
                 const targetDeclaration = {json.dumps(declaration, ensure_ascii=False)};
                 const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+                const visible = (el) => {{
+                    if (!el) return false;
+                    const style = getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && rect.width > 0
+                        && rect.height > 0;
+                }};
                 const clickLikeUser = (el) => {{
                     const rect = el.getBoundingClientRect();
                     const options = {{
@@ -314,11 +354,13 @@ class BilibiliPublisherCore(BasePublisher):
                         el.dispatchEvent(new MouseEvent(type, options));
                     }}
                 }};
-                const readSelected = () => clean(
-                    document.querySelector('.creation-statement-container input')?.value || ''
-                );
+                const readSelected = () => {{
+                    const input = document.querySelector('.creation-statement-container input');
+                    return clean(input?.value || input?.getAttribute('value') || '');
+                }};
                 const readSelectedOption = () => clean(
                     Array.from(document.querySelectorAll('.creation-statement-container .bcc-option.selected'))
+                        .filter(visible)
                         .map((el) => el.innerText || el.textContent)
                         .find(Boolean) || ''
                 );
@@ -338,14 +380,17 @@ class BilibiliPublisherCore(BasePublisher):
                 }}
                 field.scrollIntoView({{ block: 'center', inline: 'nearest' }});
                 clickLikeUser(field);
+                await new Promise((resolve) => setTimeout(resolve, 350));
 
                 const item = Array.from(document.querySelectorAll('.creation-statement-container .bcc-option'))
+                    .filter(visible)
                     .find((el) => clean(el.innerText || el.textContent) === targetDeclaration);
                 if (!item) {{
                     return {{
                         ok: false,
                         reason: 'declaration item not found',
                         available: Array.from(document.querySelectorAll('.creation-statement-container .bcc-option'))
+                            .filter(visible)
                             .map((el) => clean(el.innerText || el.textContent))
                             .filter(Boolean),
                     }};
@@ -360,11 +405,12 @@ class BilibiliPublisherCore(BasePublisher):
                 }}
 
                 const input = document.querySelector('.creation-statement-container input');
-                if (input) {{
-                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                }}
+                        if (input) {{
+                            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        }}
 
+                await new Promise((resolve) => setTimeout(resolve, 500));
                 const selected = readSelected() || readSelectedOption();
                 return {{
                     ok: selected === targetDeclaration,
@@ -417,8 +463,18 @@ class BilibiliPublisherCore(BasePublisher):
                 if (!current) {{
                     return {{ ok: false, reason: 'category selector not found' }};
                 }}
-                if (clean(current.innerText || current.textContent) === targetCategory) {{
+                const selectedNow = clean(current.innerText || current.textContent);
+                if (selectedNow === targetCategory) {{
                     return {{ ok: true, selected: targetCategory, changed: false }};
+                }}
+                if (targetCategory === '知识' && selectedNow === '人工智能') {{
+                    return {{
+                        ok: true,
+                        selected: selectedNow,
+                        categoryGroup: targetCategory,
+                        changed: false,
+                        reason: 'bilibili knowledge group displays AI leaf category',
+                    }};
                 }}
 
                 current.scrollIntoView({{ block: 'center', inline: 'nearest' }});
@@ -453,20 +509,28 @@ class BilibiliPublisherCore(BasePublisher):
                     || document.querySelector('.video-human-type .selector-container')?.innerText
                     || ''
                 );
+                if (targetCategory === '知识' && selected === '人工智能') {{
+                    return {{
+                        ok: true,
+                        selected,
+                        categoryGroup: targetCategory,
+                        changed: true,
+                        reason: 'bilibili knowledge group displays AI leaf category',
+                    }};
+                }}
                 return {{
                     ok: selected === targetCategory,
                     selected,
                     changed: true,
                 }};
             }})()
-        """) or {{}}
+        """) or {}
 
         if not result.get("ok"):
             raise CDPError(f"未能选择 B站分区 {category}: {result}")
 
         print(f"[Bilibili] 分区已设置为: {result.get('selected') or category}")
         self.cdp.sleep(ACTION_INTERVAL)
-
 
     def _upload_cover(self, cover_path: str):
         """上传封面"""
@@ -475,7 +539,14 @@ class BilibiliPublisherCore(BasePublisher):
         opened = self.cdp.evaluate(r"""
             (() => {
                 const candidates = Array.from(document.querySelectorAll(
-                    'span.edit-text, .cover-img span, .cover-main span, .cover-item span'
+                    [
+                        'span.edit-text',
+                        '.cover-img span',
+                        '.cover-main span',
+                        '.cover-item span',
+                        '[class*="cover"] span',
+                        '[class*="cover"] button'
+                    ].join(',')
                 ));
                 const target = candidates.find((el) =>
                     (el.textContent || '').trim().includes('封面设置')
@@ -514,7 +585,7 @@ class BilibiliPublisherCore(BasePublisher):
 
         query = self.cdp.send("DOM.querySelector", {
             "nodeId": root_id,
-            "selector": '.cover-editor input[type="file"][accept*="image"]',
+            "selector": '.cover-editor input[type="file"][accept*="image"], input[type="file"][accept*="image"]',
         })
         node_id = query.get("nodeId")
         if not node_id:

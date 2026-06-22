@@ -77,7 +77,7 @@ class KuaishouPublisherCore(BasePublisher):
     def connect(self, reuse_existing_tab: bool = False):
         """连接到 Chrome"""
         self.cdp.connect(
-            target_url_prefix=KUAISHOU_CREATOR_URL,
+            target_url_prefix=KUAISHOU_CREATOR_URL_PREFIX,
             reuse_existing_tab=reuse_existing_tab,
             default_url=KUAISHOU_CREATOR_URL,
         )
@@ -95,26 +95,44 @@ class KuaishouPublisherCore(BasePublisher):
         if not self.cdp.ws:
             raise CDPError("未连接，请先调用 connect()")
 
-        # 如果当前已经在快手创作者页面，先就地检查，避免离开未保存草稿触发浏览器确认框。
         current_url = self.cdp.get_current_url()
-        if current_url.startswith(KUAISHOU_CREATOR_LOGIN_CHECK_URL):
-            has_login = self.ui.wait_for_element(
-                SELECTORS["login_indicator"],
-                timeout=2,
-            )
-            if has_login:
-                return True
+        if not current_url.startswith(KUAISHOU_CREATOR_URL_PREFIX):
+            self.cdp.navigate(KUAISHOU_CREATOR_URL)
+            self.cdp.sleep(PAGE_LOAD_WAIT)
 
-        self.cdp.navigate(KUAISHOU_CREATOR_LOGIN_CHECK_URL)
-        self.cdp.sleep(PAGE_LOAD_WAIT)
+        current_url = self.cdp.get_current_url()
+        print(f"[Kuaishou] 当前 URL: {current_url}")
+        if "login" in current_url.lower() or "passport" in current_url.lower():
+            print("[Kuaishou] 未登录：上传页跳转到登录页")
+            return False
 
-        # 检查是否有登录指示器
-        has_login = self.ui.wait_for_element(
+        has_login_indicator = self.ui.wait_for_element(
             SELECTORS["login_indicator"],
-            timeout=5,
+            timeout=2,
         )
+        page_state = self.cdp.evaluate("""
+            (() => {
+                const text = document.body ? document.body.innerText : '';
+                return {
+                    hasUploadInput: !!document.querySelector('input[type="file"]'),
+                    hasUploadShell: text.includes('发布视频')
+                        || text.includes('上传视频')
+                        || text.includes('作品发布'),
+                    hasLoginText: text.includes('登录')
+                        && (text.includes('扫码') || text.includes('验证码') || text.includes('手机号'))
+                };
+            })()
+        """) or {}
 
-        return has_login
+        logged_in = bool(
+            has_login_indicator
+            or (
+                (page_state.get("hasUploadInput") or page_state.get("hasUploadShell"))
+                and not page_state.get("hasLoginText")
+            )
+        )
+        print("[Kuaishou] 已登录" if logged_in else "[Kuaishou] 未登录")
+        return logged_in
 
     def open_login_page(self):
         """打开登录页面"""
@@ -187,7 +205,7 @@ class KuaishouPublisherCore(BasePublisher):
         try:
             # 1. 导航到发布页面；新建 tab 已经打开上传入口时不重复导航。
             current_url = self.cdp.get_current_url()
-            if not current_url.startswith(KUAISHOU_CREATOR_URL):
+            if not current_url.startswith(KUAISHOU_CREATOR_URL_PREFIX):
                 self.cdp.navigate(KUAISHOU_CREATOR_URL)
                 self.cdp.sleep(PAGE_LOAD_WAIT)
 
@@ -299,14 +317,27 @@ class KuaishouPublisherCore(BasePublisher):
 
         entry_rect = self.cdp.evaluate(r"""
             (() => {
-                const candidates = Array.from(document.querySelectorAll(
-                    '[class*="cover-full-editor"], [class*="default-cover"]'
-                ));
-                const target = candidates.find((el) => {
-                    const text = (el.innerText || el.textContent || '').trim();
+                const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+                const visible = (el) => {
+                    if (!el) return false;
+                    const style = getComputedStyle(el);
                     const r = el.getBoundingClientRect();
-                    return text.includes('封面设置') && r.width > 0 && r.height > 0;
-                });
+                    return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && r.width > 0
+                        && r.height > 0;
+                };
+                const candidates = Array.from(document.querySelectorAll(
+                    [
+                        '[class*="cover-full-editor"]',
+                        '[class*="default-cover"]',
+                        '[class*="high-cover-editor-main"]',
+                        '[class*="high-cover-editor-wrapper"]'
+                    ].join(',')
+                ));
+                const target = candidates.find((el) =>
+                    visible(el) && clean(el.innerText || el.textContent).includes('封面设置')
+                );
                 if (!target) return null;
                 target.scrollIntoView({ block: 'center' });
                 const r = target.getBoundingClientRect();
@@ -344,6 +375,9 @@ class KuaishouPublisherCore(BasePublisher):
                 print("[Kuaishou] 封面编辑器未打开，重试点击封面设置")
 
         if not upload_tab_rect:
+            if self._upload_cover_direct_input(cover_path):
+                print("[Kuaishou] 竖版封面已通过新版封面入口应用")
+                return
             raise CDPError("未找到快手封面编辑器的上传封面页签")
 
         self._click_rect_center(upload_tab_rect)
@@ -461,6 +495,59 @@ class KuaishouPublisherCore(BasePublisher):
             raise CDPError("快手封面上传后未确认应用为竖版封面")
 
         print("[Kuaishou] 竖版封面已应用（3:4）")
+
+    def _upload_cover_direct_input(self, cover_path: str) -> bool:
+        """兼容快手新版封面模块：无弹窗时直接使用页面图片 input。"""
+        document = self.cdp.send("DOM.getDocument", {
+            "depth": -1,
+            "pierce": True,
+        })
+        root_id = document.get("root", {}).get("nodeId")
+        if not root_id:
+            return False
+
+        query = self.cdp.send("DOM.querySelector", {
+            "nodeId": root_id,
+            "selector": SELECTORS["cover_upload_input"],
+        })
+        node_id = query.get("nodeId")
+        if not node_id:
+            return False
+
+        self.cdp.send("DOM.setFileInputFiles", {
+            "files": [cover_path],
+            "nodeId": node_id,
+        })
+
+        for _ in range(20):
+            self.cdp.sleep(0.5)
+            applied = self.cdp.evaluate(r"""
+                (() => {
+                    const visible = (el) => {
+                        if (!el) return false;
+                        const style = getComputedStyle(el);
+                        const r = el.getBoundingClientRect();
+                        return style.display !== 'none'
+                            && style.visibility !== 'hidden'
+                            && r.width > 0
+                            && r.height > 0;
+                    };
+                    const coverRoot = document.querySelector(
+                        '[class*="default-cover"], [class*="cover-full-editor"], [class*="high-cover-editor"]'
+                    );
+                    const root = coverRoot || document.body;
+                    const imgs = Array.from(root.querySelectorAll('img')).filter(visible);
+                    return imgs.some((img) =>
+                        img.naturalWidth > 0
+                        && img.naturalHeight > 0
+                        && img.naturalHeight >= img.naturalWidth
+                    );
+                })()
+            """)
+            if applied:
+                return True
+
+        return False
 
     def _click_publish(self):
         """点击发布按钮"""
