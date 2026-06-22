@@ -430,101 +430,169 @@ class BilibiliPublisherCore(BasePublisher):
         """选择 B站分区。"""
         print(f"[Bilibili] 选择分区: {category}")
 
-        result = self.cdp.evaluate(f"""
-            (async () => {{
-                const targetCategory = {json.dumps(category, ensure_ascii=False)};
-                const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-                const visible = (el) => {{
-                    if (!el) return false;
-                    const style = getComputedStyle(el);
-                    const rect = el.getBoundingClientRect();
-                    return style.display !== 'none'
-                        && style.visibility !== 'hidden'
-                        && Number(style.opacity || '1') !== 0
-                        && rect.width > 0
-                        && rect.height > 0;
-                }};
-                const clickLikeUser = (el) => {{
-                    const rect = el.getBoundingClientRect();
-                    const options = {{
-                        bubbles: true,
-                        cancelable: true,
-                        clientX: rect.x + rect.width / 2,
-                        clientY: rect.y + rect.height / 2,
-                        view: window,
-                    }};
-                    for (const type of ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {{
-                        el.dispatchEvent(new MouseEvent(type, options));
-                    }}
-                }};
-                const current = document.querySelector(
-                    '.video-human-type .select-controller, .video-human-type .selector-container'
-                );
-                if (!current) {{
-                    return {{ ok: false, reason: 'category selector not found' }};
-                }}
-                const selectedNow = clean(current.innerText || current.textContent);
-                if (selectedNow === targetCategory) {{
-                    return {{ ok: true, selected: targetCategory, changed: false }};
-                }}
-                if (targetCategory === '知识' && selectedNow === '人工智能') {{
-                    return {{
-                        ok: true,
-                        selected: selectedNow,
-                        categoryGroup: targetCategory,
-                        changed: false,
-                        reason: 'bilibili knowledge group displays AI leaf category',
-                    }};
-                }}
+        def read_selected() -> str:
+            return self.cdp.evaluate("""
+                (() => {
+                    const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+                    return clean(
+                        document.querySelector('.video-human-type .select-controller .select-item-cont-inserted')?.innerText
+                        || document.querySelector('.video-human-type .select-controller')?.innerText
+                        || ''
+                    );
+                })()
+            """) or ""
 
-                current.scrollIntoView({{ block: 'center', inline: 'nearest' }});
-                clickLikeUser(current);
-
-                let list = null;
-                for (let attempt = 0; attempt < 12; attempt += 1) {{
-                    await new Promise((resolve) => setTimeout(resolve, 250));
-                    list = Array.from(document.querySelectorAll('.drop-list-v2-container.human-type-list'))
+        selected_now = read_selected()
+        if selected_now == category:
+            result = {"ok": True, "selected": category, "changed": False}
+        else:
+            list_info = self.cdp.evaluate("""
+                (() => {
+                    const visible = (el) => {
+                        if (!el) return false;
+                        const style = getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.display !== 'none'
+                            && style.visibility !== 'hidden'
+                            && Number(style.opacity || '1') !== 0
+                            && rect.width > 0
+                            && rect.height > 0;
+                    };
+                    const list = Array.from(document.querySelectorAll('.drop-list-v2-container.human-type-list'))
                         .find(visible);
-                    if (list) break;
-                }}
-                if (!list) {{
-                    return {{ ok: false, reason: 'category dropdown not opened' }};
-                }}
+                    return list ? { ok: true } : null;
+                })()
+            """)
 
-                const item = Array.from(list.querySelectorAll('.drop-list-v2-item'))
-                    .find((el) => clean(el.innerText || el.textContent) === targetCategory);
-                if (!item) {{
-                    return {{
-                        ok: false,
-                        reason: 'category item not found',
-                        available: clean(list.innerText || list.textContent),
-                    }};
-                }}
-                item.scrollIntoView({{ block: 'center', inline: 'nearest' }});
-                clickLikeUser(item);
+            if not list_info:
+                trigger_rect = self.cdp.evaluate("""
+                    (() => {
+                        const current = document.querySelector(
+                            '.video-human-type .select-controller, .video-human-type .selector-container'
+                        );
+                        if (!current) return { ok: false, reason: 'category selector not found' };
+                        current.scrollIntoView({ block: 'center', inline: 'nearest' });
+                        const rect = current.getBoundingClientRect();
+                        return {
+                            ok: true,
+                            x: rect.left + rect.width / 2,
+                            y: rect.top + rect.height / 2,
+                        };
+                    })()
+                """) or {}
+                if not trigger_rect.get("ok"):
+                    result = trigger_rect
+                else:
+                    self.ui.move_mouse(trigger_rect["x"], trigger_rect["y"])
+                    self.cdp.sleep(0.15)
+                    self.ui.click_mouse(trigger_rect["x"], trigger_rect["y"])
 
-                await new Promise((resolve) => setTimeout(resolve, 500));
-                const selected = clean(
-                    document.querySelector('.video-human-type .select-controller')?.innerText
-                    || document.querySelector('.video-human-type .selector-container')?.innerText
-                    || ''
-                );
-                if (targetCategory === '知识' && selected === '人工智能') {{
-                    return {{
-                        ok: true,
-                        selected,
-                        categoryGroup: targetCategory,
-                        changed: true,
-                        reason: 'bilibili knowledge group displays AI leaf category',
-                    }};
-                }}
-                return {{
-                    ok: selected === targetCategory,
-                    selected,
-                    changed: true,
-                }};
-            }})()
-        """) or {}
+                    result = None
+                    for _ in range(12):
+                        self.cdp.sleep(0.25, minimum_seconds=0.15)
+                        list_info = self.cdp.evaluate("""
+                            (() => {
+                                const visible = (el) => {
+                                    if (!el) return false;
+                                    const style = getComputedStyle(el);
+                                    const rect = el.getBoundingClientRect();
+                                    return style.display !== 'none'
+                                        && style.visibility !== 'hidden'
+                                        && Number(style.opacity || '1') !== 0
+                                        && rect.width > 0
+                                        && rect.height > 0;
+                                };
+                                const list = Array.from(document.querySelectorAll('.drop-list-v2-container.human-type-list'))
+                                    .find(visible);
+                                return list ? { ok: true } : null;
+                            })()
+                        """)
+                        if list_info:
+                            break
+                    if not list_info:
+                        result = {"ok": False, "reason": "category dropdown not opened"}
+            else:
+                result = None
+
+            if result is None:
+                item_rect = self.cdp.evaluate(f"""
+                    (async () => {{
+                        const targetCategory = {json.dumps(category, ensure_ascii=False)};
+                        const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+                        const visible = (el) => {{
+                            if (!el) return false;
+                            const style = getComputedStyle(el);
+                            const rect = el.getBoundingClientRect();
+                            return style.display !== 'none'
+                                && style.visibility !== 'hidden'
+                                && Number(style.opacity || '1') !== 0
+                                && rect.width > 0
+                                && rect.height > 0;
+                        }};
+                        const list = Array.from(document.querySelectorAll('.drop-list-v2-container.human-type-list'))
+                            .find(visible);
+                        if (!list) return {{ ok: false, reason: 'category dropdown not opened' }};
+                        const item = Array.from(list.querySelectorAll('.drop-list-v2-item'))
+                            .find((el) => clean(el.innerText || el.textContent) === targetCategory);
+                        if (!item) {{
+                            return {{
+                                ok: false,
+                                reason: 'category item not found',
+                                available: clean(list.innerText || list.textContent),
+                            }};
+                        }}
+                        const wrapper = item.closest('.drop-list-v2-content-wrp') || list;
+                        let offsetTop = item.offsetTop;
+                        for (let parent = item.offsetParent; parent && parent !== wrapper; parent = parent.offsetParent) {{
+                            offsetTop += parent.offsetTop || 0;
+                        }}
+                        wrapper.scrollTop = Math.max(0, offsetTop - wrapper.clientHeight / 2 + item.clientHeight / 2);
+                        item.scrollIntoView({{ block: 'nearest', inline: 'nearest' }});
+                        await new Promise((resolve) => requestAnimationFrame(resolve));
+                        const itemBox = item.getBoundingClientRect();
+                        const wrapperBox = wrapper.getBoundingClientRect();
+                        const x = Math.max(wrapperBox.left + 2, Math.min(itemBox.left + itemBox.width / 2, wrapperBox.right - 2));
+                        const y = Math.max(wrapperBox.top + 2, Math.min(itemBox.top + itemBox.height / 2, wrapperBox.bottom - 2));
+                        if (
+                            itemBox.bottom < wrapperBox.top
+                            || itemBox.top > wrapperBox.bottom
+                            || itemBox.right < wrapperBox.left
+                            || itemBox.left > wrapperBox.right
+                        ) {{
+                            return {{
+                                ok: false,
+                                reason: 'category item is outside dropdown viewport after scroll',
+                                itemRect: {{
+                                    top: Math.round(itemBox.top),
+                                    bottom: Math.round(itemBox.bottom),
+                                    left: Math.round(itemBox.left),
+                                    right: Math.round(itemBox.right),
+                                }},
+                                wrapperRect: {{
+                                    top: Math.round(wrapperBox.top),
+                                    bottom: Math.round(wrapperBox.bottom),
+                                    left: Math.round(wrapperBox.left),
+                                    right: Math.round(wrapperBox.right),
+                                }},
+                            }};
+                        }}
+                        return {{ ok: true, x, y }};
+                    }})()
+                """) or {}
+
+                if not item_rect.get("ok"):
+                    result = item_rect
+                else:
+                    self.ui.move_mouse(item_rect["x"], item_rect["y"])
+                    self.cdp.sleep(0.15)
+                    self.ui.click_mouse(item_rect["x"], item_rect["y"])
+                    self.cdp.sleep(0.5)
+                    selected = read_selected()
+                    result = {
+                        "ok": selected == category,
+                        "selected": selected,
+                        "changed": True,
+                    }
 
         if not result.get("ok"):
             raise CDPError(f"未能选择 B站分区 {category}: {result}")
