@@ -16,6 +16,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BILIBILI_CREATOR_URL = "https://member.bilibili.com/platform/upload/video/frame"
 BILIBILI_HOME_URL = "https://www.bilibili.com"
 BILIBILI_CREATOR_LOGIN_CHECK_URL = "https://member.bilibili.com"
+BILIBILI_DEFAULT_CATEGORY = "知识"
+BILIBILI_DEFAULT_DECLARATION = "个人观点，仅供参考"
 
 # ============================================================================
 # 登录检测

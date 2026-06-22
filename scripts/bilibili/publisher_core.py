@@ -188,11 +188,17 @@ class BilibiliPublisherCore(BasePublisher):
             # 4. 填写简介
             self._fill_content(content)
 
-            # 5. 上传封面（如果提供）
+            # 5. 固定选择 B站创作声明，这是投稿页必填项。
+            self._select_declaration(BILIBILI_DEFAULT_DECLARATION)
+
+            # 6. 固定选择 OPC 默认 B站分区，避免平台按标签自动推荐到“人工智能”。
+            self._select_category(BILIBILI_DEFAULT_CATEGORY)
+
+            # 7. 上传封面（如果提供）
             if cover_path:
                 self._upload_cover(cover_path)
 
-            # 6. 等待视频处理完成并发布（仅在需要发布时等待）
+            # 8. 等待视频处理完成并发布（仅在需要发布时等待）
             if auto_publish:
                 self._wait_video_processing()
                 self._click_publish()
@@ -287,6 +293,180 @@ class BilibiliPublisherCore(BasePublisher):
             )
 
         self.cdp.sleep(ACTION_INTERVAL)
+    def _select_declaration(self, declaration: str):
+        """选择 B站创作声明。"""
+        print(f"[Bilibili] 选择创作声明: {declaration}")
+
+        result = self.cdp.evaluate(f"""
+            (() => {{
+                const targetDeclaration = {json.dumps(declaration, ensure_ascii=False)};
+                const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+                const clickLikeUser = (el) => {{
+                    const rect = el.getBoundingClientRect();
+                    const options = {{
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: rect.x + rect.width / 2,
+                        clientY: rect.y + rect.height / 2,
+                        view: window,
+                    }};
+                    for (const type of ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {{
+                        el.dispatchEvent(new MouseEvent(type, options));
+                    }}
+                }};
+                const readSelected = () => clean(
+                    document.querySelector('.creation-statement-container input')?.value || ''
+                );
+                const readSelectedOption = () => clean(
+                    Array.from(document.querySelectorAll('.creation-statement-container .bcc-option.selected'))
+                        .map((el) => el.innerText || el.textContent)
+                        .find(Boolean) || ''
+                );
+
+                const current = readSelected() || readSelectedOption();
+                if (current === targetDeclaration) {{
+                    return {{ ok: true, selected: current, changed: false }};
+                }}
+
+                const field = document.querySelector(
+                    '.creation-statement-container .bcc-select-input-wrap, '
+                    + '.creation-statement-container input, '
+                    + '.creation-statement-container .bcc-select'
+                );
+                if (!field) {{
+                    return {{ ok: false, reason: 'declaration selector not found' }};
+                }}
+                field.scrollIntoView({{ block: 'center', inline: 'nearest' }});
+                clickLikeUser(field);
+
+                const item = Array.from(document.querySelectorAll('.creation-statement-container .bcc-option'))
+                    .find((el) => clean(el.innerText || el.textContent) === targetDeclaration);
+                if (!item) {{
+                    return {{
+                        ok: false,
+                        reason: 'declaration item not found',
+                        available: Array.from(document.querySelectorAll('.creation-statement-container .bcc-option'))
+                            .map((el) => clean(el.innerText || el.textContent))
+                            .filter(Boolean),
+                    }};
+                }}
+
+                clickLikeUser(item);
+                item.click();
+                const span = item.querySelector('span');
+                if (span) {{
+                    clickLikeUser(span);
+                    span.click();
+                }}
+
+                const input = document.querySelector('.creation-statement-container input');
+                if (input) {{
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+
+                const selected = readSelected() || readSelectedOption();
+                return {{
+                    ok: selected === targetDeclaration,
+                    selected,
+                    changed: true,
+                }};
+            }})()
+        """) or {{}}
+
+        if not result.get("ok"):
+            raise CDPError(f"未能选择 B站创作声明 {declaration}: {result}")
+
+        print(f"[Bilibili] 创作声明已设置为: {result.get('selected') or declaration}")
+        self.cdp.sleep(ACTION_INTERVAL)
+
+    def _select_category(self, category: str):
+        """选择 B站分区。"""
+        print(f"[Bilibili] 选择分区: {category}")
+
+        result = self.cdp.evaluate(f"""
+            (async () => {{
+                const targetCategory = {json.dumps(category, ensure_ascii=False)};
+                const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+                const visible = (el) => {{
+                    if (!el) return false;
+                    const style = getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && Number(style.opacity || '1') !== 0
+                        && rect.width > 0
+                        && rect.height > 0;
+                }};
+                const clickLikeUser = (el) => {{
+                    const rect = el.getBoundingClientRect();
+                    const options = {{
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: rect.x + rect.width / 2,
+                        clientY: rect.y + rect.height / 2,
+                        view: window,
+                    }};
+                    for (const type of ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {{
+                        el.dispatchEvent(new MouseEvent(type, options));
+                    }}
+                }};
+                const current = document.querySelector(
+                    '.video-human-type .select-controller, .video-human-type .selector-container'
+                );
+                if (!current) {{
+                    return {{ ok: false, reason: 'category selector not found' }};
+                }}
+                if (clean(current.innerText || current.textContent) === targetCategory) {{
+                    return {{ ok: true, selected: targetCategory, changed: false }};
+                }}
+
+                current.scrollIntoView({{ block: 'center', inline: 'nearest' }});
+                clickLikeUser(current);
+
+                let list = null;
+                for (let attempt = 0; attempt < 12; attempt += 1) {{
+                    await new Promise((resolve) => setTimeout(resolve, 250));
+                    list = Array.from(document.querySelectorAll('.drop-list-v2-container.human-type-list'))
+                        .find(visible);
+                    if (list) break;
+                }}
+                if (!list) {{
+                    return {{ ok: false, reason: 'category dropdown not opened' }};
+                }}
+
+                const item = Array.from(list.querySelectorAll('.drop-list-v2-item'))
+                    .find((el) => clean(el.innerText || el.textContent) === targetCategory);
+                if (!item) {{
+                    return {{
+                        ok: false,
+                        reason: 'category item not found',
+                        available: clean(list.innerText || list.textContent),
+                    }};
+                }}
+                item.scrollIntoView({{ block: 'center', inline: 'nearest' }});
+                clickLikeUser(item);
+
+                await new Promise((resolve) => setTimeout(resolve, 500));
+                const selected = clean(
+                    document.querySelector('.video-human-type .select-controller')?.innerText
+                    || document.querySelector('.video-human-type .selector-container')?.innerText
+                    || ''
+                );
+                return {{
+                    ok: selected === targetCategory,
+                    selected,
+                    changed: true,
+                }};
+            }})()
+        """) or {{}}
+
+        if not result.get("ok"):
+            raise CDPError(f"未能选择 B站分区 {category}: {result}")
+
+        print(f"[Bilibili] 分区已设置为: {result.get('selected') or category}")
+        self.cdp.sleep(ACTION_INTERVAL)
+
 
     def _upload_cover(self, cover_path: str):
         """上传封面"""
