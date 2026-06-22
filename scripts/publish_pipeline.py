@@ -969,23 +969,96 @@ def _select_douyin_topics(
     def _find_candidate(tag: str) -> dict | None:
         return _evaluate_js(publisher, f"""
             (() => {{
-                const wanted = {json.dumps("#" + tag)};
+                const wanted = {json.dumps(tag, ensure_ascii=False)};
+                const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+                const isVisible = (el) => {{
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const r = el.getBoundingClientRect();
+                    return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && r.width > 0
+                        && r.height > 0
+                        && r.bottom >= 0
+                        && r.top <= window.innerHeight
+                        && r.right >= 0
+                        && r.left <= window.innerWidth;
+                }};
+
+                const nameNodes = Array.from(document.querySelectorAll(
+                    '[class*="tag-hash-view-name"]'
+                )).filter((el) => isVisible(el) && clean(el.innerText || el.textContent) === wanted);
+                for (const nameNode of nameNodes) {{
+                    const row = nameNode.closest('div[class*="tag-hash-"]')
+                        || nameNode.closest('[class*="mention-suggest-item"]')
+                        || nameNode;
+                    if (!isVisible(row)) continue;
+                    const r = row.getBoundingClientRect();
+                    return {{
+                        text: clean(row.innerText || row.textContent),
+                        x: r.x,
+                        y: r.y,
+                        w: r.width,
+                        h: r.height,
+                    }};
+                }}
+
                 const items = Array.from(document.querySelectorAll(
-                    '.mention-suggest-item-container-TVOZMl, '
+                    'div[class*="tag-hash-"], '
+                    + '.mention-suggest-item-container-TVOZMl, '
                     + '.mention-suggest-item-container, '
                     + '[class*="mention-suggest-item"]'
                 ));
                 const mapped = items.map((el) => {{
                     const r = el.getBoundingClientRect();
+                    const text = clean(el.innerText || el.textContent);
                     return {{
-                        text: (el.innerText || el.textContent || '').trim(),
+                        text,
                         x: r.x,
                         y: r.y,
                         w: r.width,
                         h: r.height,
                     }};
                 }}).filter((item) => item.w > 0 && item.h > 0);
-                return mapped.find((item) => item.text.split(String.fromCharCode(10))[0].trim() === wanted) || null;
+                return mapped.find((item) => {{
+                    const firstToken = item.text.split(/\\s+/)[0].replace(/^#/, '');
+                    return firstToken === wanted;
+                }}) || null;
+            }})()
+        """)
+
+    def _remove_plain_tag_text(tag: str):
+        """删除非 mention 的普通 #话题文本，避免失败/重试残留污染正文。"""
+        _evaluate_js(publisher, f"""
+            (() => {{
+                const editor = document.querySelector('div.editor-kit-container[contenteditable="true"]');
+                if (!editor) return false;
+                const tag = {json.dumps(tag, ensure_ascii=False)};
+                const needle = '#' + tag;
+                const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+                const textNodes = [];
+                while (walker.nextNode()) {{
+                    textNodes.push(walker.currentNode);
+                }}
+                for (const node of textNodes) {{
+                    if (node.parentElement && node.parentElement.closest('[data-mention="#"]')) {{
+                        continue;
+                    }}
+                    let value = node.nodeValue || '';
+                    value = value
+                        .split('\\u00a0' + needle).join('')
+                        .split(' ' + needle).join('')
+                        .split(needle).join('');
+                    node.nodeValue = value;
+                }}
+                editor.normalize();
+                editor.dispatchEvent(new InputEvent('input', {{
+                    bubbles: true,
+                    inputType: 'deleteContentBackward',
+                    data: null,
+                }}));
+                editor.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                return true;
             }})()
         """)
 
@@ -1067,15 +1140,20 @@ def _select_douyin_topics(
         before_names = set(_mention_names())
         _move_caret_to_editor_end()
         _cdp_insert_text(publisher, f" #{tag}")
-        time.sleep(_jitter_seconds(1.2, timing_jitter, minimum_seconds=0.8))
 
-        candidate = _find_candidate(tag)
+        candidate = None
+        for attempt in range(12):
+            time.sleep(_jitter_seconds(0.45, timing_jitter, minimum_seconds=0.25))
+            candidate = _find_candidate(tag)
+            if candidate:
+                break
         if candidate:
             _cdp_click_rect(publisher, candidate, timing_jitter)
             time.sleep(_jitter_seconds(0.9, timing_jitter, minimum_seconds=0.5))
         else:
             _restore_topic_state(before_names, tag)
 
+        _remove_plain_tag_text(tag)
         existing_after = set(_mention_names())
         expected_after = before_names | {tag}
         if existing_after == expected_after:
