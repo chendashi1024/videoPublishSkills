@@ -327,21 +327,19 @@ class KuaishouPublisherCore(BasePublisher):
                         && r.width > 0
                         && r.height > 0;
                 };
-                const candidates = Array.from(document.querySelectorAll(
-                    [
-                        '[class*="cover-full-editor"]',
-                        '[class*="default-cover"]',
-                        '[class*="high-cover-editor-main"]',
-                        '[class*="high-cover-editor-wrapper"]'
-                    ].join(',')
-                ));
-                const target = candidates.find((el) =>
-                    visible(el) && clean(el.innerText || el.textContent).includes('封面设置')
-                );
+                const target = Array.from(document.querySelectorAll(
+                    '[class*="default-cover"], [class*="cover-full-editor"]'
+                )).find(visible);
                 if (!target) return null;
                 target.scrollIntoView({ block: 'center' });
                 const r = target.getBoundingClientRect();
-                return { x: r.x, y: r.y, w: r.width, h: r.height };
+                return {
+                    x: r.x,
+                    y: r.y,
+                    w: r.width,
+                    h: r.height,
+                    text: clean(target.innerText || target.textContent),
+                };
             })()
         """)
         if not entry_rect:
@@ -375,41 +373,56 @@ class KuaishouPublisherCore(BasePublisher):
                 print("[Kuaishou] 封面编辑器未打开，重试点击封面设置")
 
         if not upload_tab_rect:
-            if self._upload_cover_direct_input(cover_path):
-                print("[Kuaishou] 竖版封面已通过新版封面入口应用")
-                return
             raise CDPError("未找到快手封面编辑器的上传封面页签")
 
         self._click_rect_center(upload_tab_rect)
         self.cdp.sleep(0.8)
 
-        upload_area_ready = self.ui.wait_for_element(
-            SELECTORS["cover_modal_upload_input"],
-            timeout=6,
-        )
-        if not upload_area_ready:
+        upload_state = None
+        deadline = time.time() + 6
+        while time.time() < deadline:
+            upload_state = self.cdp.evaluate(f"""
+                (() => {{
+                    const modal = document.querySelector('.ant-modal');
+                    if (!modal) return {{ ok: false, reason: 'modal not found' }};
+                    const input = modal.querySelector({json.dumps(SELECTORS["cover_modal_upload_input"])});
+                    const text = String(modal.innerText || modal.textContent || '');
+                    return {{
+                        hasInput: !!input,
+                        hasUploadedCover: text.includes('清空上传'),
+                    }};
+                }})()
+            """) or {}
+            if upload_state.get("hasInput") or upload_state.get("hasUploadedCover"):
+                break
+            self.cdp.sleep(0.5)
+
+        if not upload_state or (
+            not upload_state.get("hasInput") and not upload_state.get("hasUploadedCover")
+        ):
             raise CDPError("快手封面编辑器上传区域未出现")
 
-        document = self.cdp.send("DOM.getDocument", {
-            "depth": -1,
-            "pierce": True,
-        })
-        root_id = document.get("root", {}).get("nodeId")
-        if not root_id:
-            raise CDPError("未能读取快手封面编辑器 DOM")
+        if upload_state.get("hasInput"):
+            document = self.cdp.send("DOM.getDocument", {
+                "depth": -1,
+                "pierce": True,
+            })
+            root_id = document.get("root", {}).get("nodeId")
+            if not root_id:
+                raise CDPError("未能读取快手封面编辑器 DOM")
 
-        query = self.cdp.send("DOM.querySelector", {
-            "nodeId": root_id,
-            "selector": SELECTORS["cover_modal_upload_input"],
-        })
-        node_id = query.get("nodeId")
-        if not node_id:
-            raise CDPError("未找到快手封面编辑器图片上传输入框")
+            query = self.cdp.send("DOM.querySelector", {
+                "nodeId": root_id,
+                "selector": SELECTORS["cover_modal_upload_input"],
+            })
+            node_id = query.get("nodeId")
+            if not node_id:
+                raise CDPError("未找到快手封面编辑器图片上传输入框")
 
-        self.cdp.send("DOM.setFileInputFiles", {
-            "files": [cover_path],
-            "nodeId": node_id,
-        })
+            self.cdp.send("DOM.setFileInputFiles", {
+                "files": [cover_path],
+                "nodeId": node_id,
+            })
 
         has_upload_preview = False
         for _ in range(20):
@@ -484,8 +497,13 @@ class KuaishouPublisherCore(BasePublisher):
             applied = self.cdp.evaluate(r"""
                 (() => {
                     if (document.querySelector('.ant-modal-wrap')) return false;
-                    const img = document.querySelector('[class*="default-cover"] img');
-                    return !!img && img.naturalWidth > 0 && img.naturalHeight > img.naturalWidth;
+                    const root = document.querySelector('[class*="default-cover"]');
+                    if (!root) return false;
+                    const img = root.querySelector('img');
+                    const style = getComputedStyle(root);
+                    return (
+                        !!img && img.naturalWidth > 0 && img.naturalHeight > 0
+                    ) || (style.backgroundImage || '').includes('url(');
                 })()
             """)
             if applied:
