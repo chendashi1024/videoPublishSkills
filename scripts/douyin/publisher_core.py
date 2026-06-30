@@ -219,8 +219,8 @@ class DouyinPublisherCore(BasePublisher):
         """上传视频"""
         print(f"[Douyin] 上传视频: {video_path}")
 
-        # 查找文件输入框
-        file_input = self.ui.find_element(SELECTORS["video_upload_input"])
+        # 登录指示器出现不代表上传组件已经挂载，需单独等待 file input。
+        file_input = self.ui.find_element(SELECTORS["video_upload_input"], timeout=20)
         if not file_input:
             raise CDPError("未找到视频上传输入框")
 
