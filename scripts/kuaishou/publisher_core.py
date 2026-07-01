@@ -500,17 +500,17 @@ class KuaishouPublisherCore(BasePublisher):
                     const root = document.querySelector('[class*="default-cover"]');
                     if (!root) return false;
                     const img = root.querySelector('img');
-                    const style = getComputedStyle(root);
-                    return (
-                        !!img && img.naturalWidth > 0 && img.naturalHeight > 0
-                    ) || (style.backgroundImage || '').includes('url(');
+                    return !!img
+                        && img.naturalWidth > 0
+                        && img.naturalHeight > 0
+                        && img.naturalHeight > img.naturalWidth;
                 })()
             """)
             if applied:
                 break
 
         if not applied:
-            raise CDPError("快手封面上传后未确认应用为竖版封面")
+            raise CDPError("快手封面上传后未确认应用为 3:4 竖版封面")
 
         print("[Kuaishou] 竖版封面已应用（3:4）")
 

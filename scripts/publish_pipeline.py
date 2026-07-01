@@ -465,10 +465,108 @@ def _upload_xiaohongshu_video_cover(
         cover_path,
     )
     if not uploaded:
-        print("[pipeline] Warning: Xiaohongshu cover image input not found.")
-        return
+        raise CDPError("小红书封面图片上传入口未找到，未能应用 3:4 竖版封面")
 
-    time.sleep(_jitter_seconds(2.5, timing_jitter, minimum_seconds=1.5))
+    modal_ready = False
+    deadline = time.time() + 12
+    while time.time() < deadline:
+        modal_ready = bool(_evaluate_js(publisher, r"""
+            (() => {
+                const modal = document.querySelector('.cover-modal, .d-modal');
+                if (!modal) return false;
+                const ratioText = String(
+                    modal.querySelector('.ratio-select, .ratio-text')?.innerText
+                    || modal.querySelector('.ratio-select, .ratio-text')?.textContent
+                    || ''
+                ).trim();
+                const verticalImage = Array.from(modal.querySelectorAll('img')).some((img) =>
+                    img.naturalWidth > 0
+                    && img.naturalHeight > 0
+                    && img.naturalHeight > img.naturalWidth
+                );
+                const verticalPreview = Array.from(modal.querySelectorAll('[style*="background-image"]')).some((el) => {
+                    const r = el.getBoundingClientRect();
+                    return r.height > r.width;
+                });
+                return ratioText.includes('3:4') && (verticalImage || verticalPreview);
+            })()
+        """))
+        if modal_ready:
+            break
+        time.sleep(_jitter_seconds(0.5, timing_jitter, minimum_seconds=0.25))
+    if not modal_ready:
+        raise CDPError("小红书封面弹窗未检测到 3:4 竖版预览，停止避免误用横版封面")
+
+    zoom_ready = bool(_evaluate_js(publisher, r"""
+        (() => {
+            const modal = document.querySelector('.cover-modal, .d-modal');
+            if (!modal) return false;
+            const value = String(modal.querySelector('.slider-value')?.innerText || '').trim();
+            return value === '100%';
+        })()
+    """))
+    if not zoom_ready:
+        slider_rect = _evaluate_js(publisher, r"""
+            (() => {
+                const button = document.querySelector('.cover-modal .d-slider__button, .d-modal .d-slider__button');
+                const runway = document.querySelector('.cover-modal .d-slider__runway, .d-modal .d-slider__runway');
+                if (!button || !runway) return null;
+                const b = button.getBoundingClientRect();
+                const r = runway.getBoundingClientRect();
+                return {
+                    button: { x: b.x, y: b.y, w: b.width, h: b.height },
+                    runway: { x: r.x, y: r.y, w: r.width, h: r.height },
+                };
+            })()
+        """)
+        if not slider_rect:
+            raise CDPError("小红书封面图片大小滑块未找到，无法确认完整竖版封面")
+
+        start_x = float(slider_rect["button"]["x"]) + float(slider_rect["button"]["w"]) / 2
+        y = float(slider_rect["button"]["y"]) + float(slider_rect["button"]["h"]) / 2
+        end_x = float(slider_rect["runway"]["x"])
+        _send_cdp(publisher, "Input.dispatchMouseEvent", {
+            "type": "mouseMoved",
+            "x": start_x,
+            "y": y,
+        })
+        _send_cdp(publisher, "Input.dispatchMouseEvent", {
+            "type": "mousePressed",
+            "x": start_x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1,
+        })
+        for step in range(1, 13):
+            x = start_x + (end_x - start_x) * step / 12
+            _send_cdp(publisher, "Input.dispatchMouseEvent", {
+                "type": "mouseMoved",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "buttons": 1,
+            })
+            time.sleep(_jitter_seconds(0.05, timing_jitter, minimum_seconds=0.02))
+        _send_cdp(publisher, "Input.dispatchMouseEvent", {
+            "type": "mouseReleased",
+            "x": end_x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1,
+        })
+        time.sleep(_jitter_seconds(0.8, timing_jitter, minimum_seconds=0.4))
+
+        zoom_ready = bool(_evaluate_js(publisher, r"""
+            (() => {
+                const modal = document.querySelector('.cover-modal, .d-modal');
+                if (!modal) return false;
+                const value = String(modal.querySelector('.slider-value')?.innerText || '').trim();
+                return value === '100%';
+            })()
+        """))
+    if not zoom_ready:
+        raise CDPError("小红书封面图片大小未能归零到 100%，停止避免生成放大裁切封面")
+
     confirm_rect = _evaluate_js(publisher, r"""
         (() => {
             const buttons = Array.from(document.querySelectorAll('.cover-modal button, .d-modal button'));
@@ -482,20 +580,36 @@ def _upload_xiaohongshu_video_cover(
             return null;
         })()
     """)
-    if confirm_rect:
-        _cdp_click_rect(publisher, confirm_rect, timing_jitter)
-        time.sleep(_jitter_seconds(2.0, timing_jitter, minimum_seconds=1.0))
+    if not confirm_rect:
+        raise CDPError("小红书封面确认按钮未找到，未能应用 3:4 竖版封面")
 
-    ok = _evaluate_js(publisher, r"""
-        (() => {
-            const cover = document.querySelector('.publish-page-content-cover .default');
-            if (!cover) return false;
-            const r = cover.getBoundingClientRect();
-            const style = cover.getAttribute('style') || '';
-            return r.width > 0 && r.height > 0 && (r.height > r.width || style.includes('0.75 / 1'));
-        })()
-    """)
-    print("[pipeline] Xiaohongshu cover uploaded." if ok else "[pipeline] Warning: Xiaohongshu cover upload was not verified.")
+    ok = False
+    for _ in range(3):
+        _cdp_click_rect(publisher, confirm_rect, timing_jitter)
+        time.sleep(_jitter_seconds(1.2, timing_jitter, minimum_seconds=0.8))
+        ok = bool(_evaluate_js(publisher, r"""
+            (() => {
+                const modalOpen = !!document.querySelector('.cover-modal, .d-modal');
+                if (modalOpen) return false;
+                const cover = document.querySelector('.publish-page-content-cover .default');
+                const preview = document.querySelector('.publish-page-preview img.cover');
+                const coverStyle = cover ? (cover.getAttribute('style') || '') : '';
+                const coverRect = cover ? cover.getBoundingClientRect() : null;
+                const previewVertical = !!preview
+                    && preview.naturalWidth > 0
+                    && preview.naturalHeight > 0
+                    && preview.naturalHeight > preview.naturalWidth;
+                const coverVertical = !!coverRect && coverRect.height > coverRect.width;
+                return previewVertical
+                    && (coverVertical || coverStyle.includes('0.75 / 1'));
+            })()
+        """))
+        if ok:
+            break
+
+    if not ok:
+        raise CDPError("小红书封面未应用为 3:4 竖版，停止避免误判发布页")
+    print("[pipeline] Xiaohongshu 3:4 cover uploaded.")
 
 
 def _click_first_visible_text(
