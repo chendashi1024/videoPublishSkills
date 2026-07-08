@@ -275,6 +275,7 @@ class KuaishouPublisherCore(BasePublisher):
             "files": [video_path],
             "nodeId": file_input["nodeId"],
         })
+        self._dispatch_file_input_events(SELECTORS["video_upload_input"])
 
         self.cdp.sleep(UPLOAD_WAIT)
         print("[Kuaishou] 视频上传中...")
@@ -431,6 +432,7 @@ class KuaishouPublisherCore(BasePublisher):
                 "files": [cover_path],
                 "nodeId": node_id,
             })
+            self._dispatch_file_input_events(SELECTORS["cover_modal_upload_input"])
 
         has_upload_preview = False
         for _ in range(20):
@@ -522,6 +524,20 @@ class KuaishouPublisherCore(BasePublisher):
 
         print("[Kuaishou] 竖版封面已应用（3:4）")
 
+    def _dispatch_file_input_events(self, selector: str):
+        """快手上传组件需要真实 input/change 事件才会进入前端上传流程。"""
+        result = self.cdp.evaluate(f"""
+            (() => {{
+                const input = document.querySelector({json.dumps(selector)});
+                if (!input) return {{ ok: false, reason: 'input not found' }};
+                input.dispatchEvent(new Event('input', {{ bubbles: true, composed: true }}));
+                input.dispatchEvent(new Event('change', {{ bubbles: true, composed: true }}));
+                return {{ ok: true }};
+            }})()
+        """) or {{}}
+        if not result.get("ok"):
+            print(f"[Kuaishou] Warning: 上传控件事件补发失败: {result.get('reason')}")
+
     def _upload_cover_direct_input(self, cover_path: str) -> bool:
         """兼容快手新版封面模块：无弹窗时直接使用页面图片 input。"""
         document = self.cdp.send("DOM.getDocument", {
@@ -544,6 +560,7 @@ class KuaishouPublisherCore(BasePublisher):
             "files": [cover_path],
             "nodeId": node_id,
         })
+        self._dispatch_file_input_events(SELECTORS["cover_upload_input"])
 
         for _ in range(20):
             self.cdp.sleep(0.5)
