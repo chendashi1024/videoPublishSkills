@@ -38,7 +38,7 @@ SELECTORS = {
     "title_input": 'input[placeholder*="标题"], input[placeholder*="作品标题"]',
 
     # 描述/正文输入框（上传后动态出现）
-    "content_input": 'div[contenteditable="true"][class*="description"], textarea[placeholder*="描述"], textarea[placeholder*="作品描述"]',
+    "content_input": '#work-description-edit, div[contenteditable="true"][class*="description"], textarea[placeholder*="描述"], textarea[placeholder*="作品描述"]',
 
     # 话题标签（上传后动态出现）
     "topic_input": 'input[placeholder*="话题"], input[placeholder*="添加话题"]',
@@ -67,6 +67,7 @@ SELECTORS = {
 
 PAGE_LOAD_WAIT = 3  # 页面加载等待时间
 UPLOAD_WAIT = 6  # 上传后等待编辑器出现的时间
+UPLOAD_FORM_TIMEOUT = 180  # 上传后等待发布表单出现的时间
 VIDEO_PROCESS_TIMEOUT = 180  # 视频处理超时时间
 VIDEO_PROCESS_POLL = 3  # 视频处理状态轮询间隔
 ACTION_INTERVAL = 1  # 操作间隔时间

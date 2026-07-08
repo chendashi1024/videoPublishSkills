@@ -279,6 +279,14 @@ class KuaishouPublisherCore(BasePublisher):
         self.cdp.sleep(UPLOAD_WAIT)
         print("[Kuaishou] 视频上传中...")
 
+        form_ready = self.ui.wait_for_element(
+            SELECTORS["content_input"],
+            timeout=UPLOAD_FORM_TIMEOUT,
+            poll_interval=2,
+        )
+        if not form_ready:
+            raise CDPError("快手上传后未进入作品描述表单")
+
     def _wait_video_processing(self):
         """等待视频处理完成"""
         print("[Kuaishou] 等待视频处理...")

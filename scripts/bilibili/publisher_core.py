@@ -383,19 +383,18 @@ class BilibiliPublisherCore(BasePublisher):
                 await new Promise((resolve) => setTimeout(resolve, 350));
 
                 const item = Array.from(document.querySelectorAll('.creation-statement-container .bcc-option'))
-                    .filter(visible)
                     .find((el) => clean(el.innerText || el.textContent) === targetDeclaration);
                 if (!item) {{
                     return {{
                         ok: false,
                         reason: 'declaration item not found',
                         available: Array.from(document.querySelectorAll('.creation-statement-container .bcc-option'))
-                            .filter(visible)
                             .map((el) => clean(el.innerText || el.textContent))
                             .filter(Boolean),
                     }};
                 }}
 
+                item.scrollIntoView({{ block: 'center', inline: 'nearest' }});
                 clickLikeUser(item);
                 item.click();
                 const span = item.querySelector('span');
@@ -548,7 +547,7 @@ class BilibiliPublisherCore(BasePublisher):
                         }}
                         wrapper.scrollTop = Math.max(0, offsetTop - wrapper.clientHeight / 2 + item.clientHeight / 2);
                         item.scrollIntoView({{ block: 'nearest', inline: 'nearest' }});
-                        await new Promise((resolve) => requestAnimationFrame(resolve));
+                        await new Promise((resolve) => setTimeout(resolve, 100));
                         const itemBox = item.getBoundingClientRect();
                         const wrapperBox = wrapper.getBoundingClientRect();
                         const x = Math.max(wrapperBox.left + 2, Math.min(itemBox.left + itemBox.width / 2, wrapperBox.right - 2));
