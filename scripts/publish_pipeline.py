@@ -429,6 +429,31 @@ def _upload_xiaohongshu_video_cover(
     _cdp_click_rect(publisher, cover_rect, timing_jitter)
     time.sleep(_jitter_seconds(1.3, timing_jitter, minimum_seconds=0.8))
 
+    upload_tab_rect = _evaluate_js(publisher, r"""
+        (() => {
+            const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+            const visible = (el) => {
+                if (!el) return false;
+                const style = getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.display !== 'none'
+                    && style.visibility !== 'hidden'
+                    && rect.width > 0
+                    && rect.height > 0;
+            };
+            const modal = document.querySelector('.cover-modal, .d-modal');
+            const tab = Array.from(
+                (modal || document).querySelectorAll('button, span, div')
+            ).find((el) => visible(el) && clean(el.innerText || el.textContent) === '上传封面');
+            if (!tab) return null;
+            const r = tab.getBoundingClientRect();
+            return { x: r.x, y: r.y, w: r.width, h: r.height };
+        })()
+    """)
+    if upload_tab_rect:
+        _cdp_click_rect(publisher, upload_tab_rect, timing_jitter)
+        time.sleep(_jitter_seconds(0.6, timing_jitter, minimum_seconds=0.3))
+
     ratio_rect = _evaluate_js(publisher, r"""
         (() => {
             const el = document.querySelector('.cover-modal .ratio-select, .d-modal .ratio-select');
@@ -479,6 +504,12 @@ def _upload_xiaohongshu_video_cover(
                     || modal.querySelector('.ratio-select, .ratio-text')?.textContent
                     || ''
                 ).trim();
+                const activeRatio = String(
+                    modal.querySelector('.crop-ratio-item-active')?.innerText
+                    || modal.querySelector('.crop-ratio-item-active')?.textContent
+                    || ''
+                ).trim();
+                const hasCropRatioList = Boolean(modal.querySelector('.crop-ratio-item'));
                 const verticalImage = Array.from(modal.querySelectorAll('img')).some((img) =>
                     img.naturalWidth > 0
                     && img.naturalHeight > 0
@@ -488,7 +519,10 @@ def _upload_xiaohongshu_video_cover(
                     const r = el.getBoundingClientRect();
                     return r.height > r.width;
                 });
-                return ratioText.includes('3:4') && (verticalImage || verticalPreview);
+                const ratioReady = ratioText.includes('3:4')
+                    || activeRatio === '3:4'
+                    || hasCropRatioList;
+                return ratioReady && (verticalImage || verticalPreview);
             })()
         """))
         if modal_ready:
@@ -497,12 +531,49 @@ def _upload_xiaohongshu_video_cover(
     if not modal_ready:
         raise CDPError("小红书封面弹窗未检测到 3:4 竖版预览，停止避免误用横版封面")
 
+    crop_ratio_rect = _evaluate_js(publisher, r"""
+        (() => {
+            const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+            const visible = (el) => {
+                if (!el) return false;
+                const style = getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.display !== 'none'
+                    && style.visibility !== 'hidden'
+                    && rect.width > 0
+                    && rect.height > 0;
+            };
+            const modal = document.querySelector('.cover-modal, .d-modal');
+            const item = Array.from(
+                (modal || document).querySelectorAll('.crop-ratio-item')
+            ).find((el) => visible(el) && clean(el.innerText || el.textContent) === '3:4');
+            if (!item) return null;
+            const r = item.getBoundingClientRect();
+            return { x: r.x, y: r.y, w: r.width, h: r.height };
+        })()
+    """)
+    if crop_ratio_rect:
+        _cdp_click_rect(publisher, crop_ratio_rect, timing_jitter)
+        time.sleep(_jitter_seconds(0.5, timing_jitter, minimum_seconds=0.25))
+
     zoom_ready = bool(_evaluate_js(publisher, r"""
         (() => {
             const modal = document.querySelector('.cover-modal, .d-modal');
             if (!modal) return false;
             const value = String(modal.querySelector('.slider-value')?.innerText || '').trim();
-            return value === '100%';
+            if (value) return value === '100%';
+            const activeRatio = String(
+                modal.querySelector('.crop-ratio-item-active')?.innerText
+                || modal.querySelector('.crop-ratio-item-active')?.textContent
+                || ''
+            ).trim();
+            const completeVerticalImage = Array.from(modal.querySelectorAll('img')).some((img) =>
+                img.naturalWidth > 0
+                && img.naturalHeight > 0
+                && img.naturalHeight > img.naturalWidth
+                && Math.abs((img.naturalWidth / img.naturalHeight) - 0.75) < 0.02
+            );
+            return activeRatio === '3:4' && completeVerticalImage;
         })()
     """))
     if not zoom_ready:
@@ -587,10 +658,9 @@ def _upload_xiaohongshu_video_cover(
     for _ in range(3):
         _cdp_click_rect(publisher, confirm_rect, timing_jitter)
         time.sleep(_jitter_seconds(1.2, timing_jitter, minimum_seconds=0.8))
-        ok = bool(_evaluate_js(publisher, r"""
+        cover_state = _evaluate_js(publisher, r"""
             (() => {
                 const modalOpen = !!document.querySelector('.cover-modal, .d-modal');
-                if (modalOpen) return false;
                 const cover = document.querySelector('.publish-page-content-cover .default');
                 const preview = document.querySelector('.publish-page-preview img.cover');
                 const coverStyle = cover ? (cover.getAttribute('style') || '') : '';
@@ -600,10 +670,45 @@ def _upload_xiaohongshu_video_cover(
                     && preview.naturalHeight > 0
                     && preview.naturalHeight > preview.naturalWidth;
                 const coverVertical = !!coverRect && coverRect.height > coverRect.width;
-                return previewVertical
-                    && (coverVertical || coverStyle.includes('0.75 / 1'));
+                return {
+                    modalOpen,
+                    coverApplied: previewVertical
+                        && (coverVertical || coverStyle.includes('0.75 / 1')),
+                };
             })()
-        """))
+        """) or {}
+        if cover_state.get("coverApplied") and cover_state.get("modalOpen"):
+            close_rect = _evaluate_js(publisher, r"""
+                (() => {
+                    const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+                    const buttons = Array.from(document.querySelectorAll('.cover-modal button, .d-modal button'));
+                    const btn = buttons.find((button) =>
+                        ['取消', '关闭'].includes(clean(button.innerText || button.textContent))
+                    );
+                    if (!btn) return null;
+                    const r = btn.getBoundingClientRect();
+                    return { x: r.x, y: r.y, w: r.width, h: r.height };
+                })()
+            """)
+            if close_rect:
+                _cdp_click_rect(publisher, close_rect, timing_jitter)
+                time.sleep(_jitter_seconds(0.8, timing_jitter, minimum_seconds=0.4))
+            cover_state = _evaluate_js(publisher, r"""
+                (() => {
+                    const modalOpen = !!document.querySelector('.cover-modal, .d-modal');
+                    if (modalOpen) {
+                        for (const el of Array.from(document.querySelectorAll('.cover-modal, .d-modal, .d-modal-mask'))) {
+                            el.remove();
+                        }
+                        document.body.style.overflow = 'auto';
+                    }
+                    return {
+                        modalOpen: !!document.querySelector('.cover-modal, .d-modal'),
+                        coverApplied: true,
+                    };
+                })()
+            """) or cover_state
+        ok = bool(cover_state.get("coverApplied")) and not bool(cover_state.get("modalOpen"))
         if ok:
             break
 
