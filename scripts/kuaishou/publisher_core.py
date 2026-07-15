@@ -337,7 +337,9 @@ class KuaishouPublisherCore(BasePublisher):
                         && r.height > 0;
                 };
                 const target = Array.from(document.querySelectorAll(
-                    '[class*="default-cover"], [class*="cover-full-editor"]'
+                    '[class*="cover-full-editor"]'
+                )).find(visible) || Array.from(document.querySelectorAll(
+                    '[class*="default-cover"]'
                 )).find(visible);
                 if (!target) return null;
                 target.scrollIntoView({ block: 'center' });

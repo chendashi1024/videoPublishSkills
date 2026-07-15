@@ -395,6 +395,54 @@ def _upload_douyin_cover_from_modal(
     return False
 
 
+XIAOHONGSHU_COMPLETE_COVER_RATIOS = ("3:4", "原始")
+
+
+def _xiaohongshu_cover_zoom_ready(
+    slider_value: str,
+    active_ratio: str,
+    image_dimensions: list[tuple[int, int]],
+) -> bool:
+    """判断小红书封面是否保持完整 3:4 原图。"""
+    if slider_value:
+        return slider_value == "100%"
+    complete_vertical_image = any(
+        width > 0
+        and height > 0
+        and height > width
+        and abs((width / height) - 0.75) < 0.02
+        for width, height in image_dimensions
+    )
+    return (
+        active_ratio in XIAOHONGSHU_COMPLETE_COVER_RATIOS
+        and complete_vertical_image
+    )
+
+
+def _find_xiaohongshu_cover_confirm_rect(publisher):
+    """只在小红书封面弹窗内查找确定按钮。"""
+    return _evaluate_js(publisher, r"""
+        (() => {
+            const modal = document.querySelector('.cover-modal')
+                || Array.from(document.querySelectorAll('.d-modal')).find((candidate) =>
+                    candidate.querySelector(
+                        '.crop-ratio-item, .ratio-select, input[type="file"][accept*="image"]'
+                    )
+                );
+            if (!modal) return null;
+            const buttons = Array.from(modal.querySelectorAll('button'));
+            for (const btn of buttons) {
+                const text = (btn.innerText || btn.textContent || '').trim();
+                if (text === '确定') {
+                    const r = btn.getBoundingClientRect();
+                    return { x: r.x, y: r.y, w: r.width, h: r.height };
+                }
+            }
+            return null;
+        })()
+    """)
+
+
 def _upload_xiaohongshu_video_cover(
     publisher,
     cover_path: str,
@@ -556,7 +604,11 @@ def _upload_xiaohongshu_video_cover(
         _cdp_click_rect(publisher, crop_ratio_rect, timing_jitter)
         time.sleep(_jitter_seconds(0.5, timing_jitter, minimum_seconds=0.25))
 
-    zoom_ready = bool(_evaluate_js(publisher, r"""
+    complete_cover_ratios = json.dumps(
+        XIAOHONGSHU_COMPLETE_COVER_RATIOS,
+        ensure_ascii=False,
+    )
+    zoom_ready_script = r"""
         (() => {
             const modal = document.querySelector('.cover-modal, .d-modal');
             if (!modal) return false;
@@ -573,9 +625,10 @@ def _upload_xiaohongshu_video_cover(
                 && img.naturalHeight > img.naturalWidth
                 && Math.abs((img.naturalWidth / img.naturalHeight) - 0.75) < 0.02
             );
-            return activeRatio === '3:4' && completeVerticalImage;
+            return __COMPLETE_COVER_RATIOS__.includes(activeRatio) && completeVerticalImage;
         })()
-    """))
+    """.replace("__COMPLETE_COVER_RATIOS__", complete_cover_ratios)
+    zoom_ready = bool(_evaluate_js(publisher, zoom_ready_script))
     if not zoom_ready:
         slider_rect = _evaluate_js(publisher, r"""
             (() => {
@@ -638,19 +691,7 @@ def _upload_xiaohongshu_video_cover(
     if not zoom_ready:
         raise CDPError("小红书封面图片大小未能归零到 100%，停止避免生成放大裁切封面")
 
-    confirm_rect = _evaluate_js(publisher, r"""
-        (() => {
-            const buttons = Array.from(document.querySelectorAll('.cover-modal button, .d-modal button'));
-            for (const btn of buttons) {
-                const text = (btn.innerText || btn.textContent || '').trim();
-                if (text === '确定') {
-                    const r = btn.getBoundingClientRect();
-                    return { x: r.x, y: r.y, w: r.width, h: r.height };
-                }
-            }
-            return null;
-        })()
-    """)
+    confirm_rect = _find_xiaohongshu_cover_confirm_rect(publisher)
     if not confirm_rect:
         raise CDPError("小红书封面确认按钮未找到，未能应用 3:4 竖版封面")
 
@@ -710,6 +751,9 @@ def _upload_xiaohongshu_video_cover(
             """) or cover_state
         ok = bool(cover_state.get("coverApplied")) and not bool(cover_state.get("modalOpen"))
         if ok:
+            break
+        confirm_rect = _find_xiaohongshu_cover_confirm_rect(publisher)
+        if not confirm_rect:
             break
 
     if not ok:
