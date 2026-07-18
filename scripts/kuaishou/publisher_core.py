@@ -324,37 +324,7 @@ class KuaishouPublisherCore(BasePublisher):
         """上传封面"""
         print(f"[Kuaishou] 上传封面: {cover_path}")
 
-        entry_rect = self.cdp.evaluate(r"""
-            (() => {
-                const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-                const visible = (el) => {
-                    if (!el) return false;
-                    const style = getComputedStyle(el);
-                    const r = el.getBoundingClientRect();
-                    return style.display !== 'none'
-                        && style.visibility !== 'hidden'
-                        && r.width > 0
-                        && r.height > 0;
-                };
-                const target = Array.from(document.querySelectorAll(
-                    '[class*="cover-full-editor"]'
-                )).find(visible) || Array.from(document.querySelectorAll(
-                    '[class*="default-cover"]'
-                )).find(visible);
-                if (!target) return null;
-                target.scrollIntoView({ block: 'center' });
-                const r = target.getBoundingClientRect();
-                return {
-                    x: r.x,
-                    y: r.y,
-                    w: r.width,
-                    h: r.height,
-                    text: clean(target.innerText || target.textContent),
-                };
-            })()
-        """)
-        if not entry_rect:
-            raise CDPError("未找到快手封面设置入口")
+        entry_rect = self._wait_for_cover_editor_entry()
 
         upload_tab_rect = None
         for attempt in range(3):
@@ -525,6 +495,83 @@ class KuaishouPublisherCore(BasePublisher):
             raise CDPError("快手封面上传后未确认应用为 3:4 竖版封面")
 
         print("[Kuaishou] 竖版封面已应用（3:4）")
+
+    def _wait_for_cover_editor_entry(self) -> dict[str, Any]:
+        """等待视频和推荐封面处理完成后出现真实封面编辑入口。"""
+        deadline = time.time() + VIDEO_PROCESS_TIMEOUT
+        last_reason = "cover-full-editor 尚未出现"
+
+        while time.time() < deadline:
+            state = self.cdp.evaluate(r"""
+                (() => {
+                    const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+                    const visible = (el) => {
+                        if (!el) return false;
+                        const style = getComputedStyle(el);
+                        const r = el.getBoundingClientRect();
+                        return style.display !== 'none'
+                            && style.visibility !== 'hidden'
+                            && r.width > 0
+                            && r.height > 0;
+                    };
+                    const target = Array.from(document.querySelectorAll(
+                        '[class*="cover-full-editor"]'
+                    )).find(visible);
+                    const defaultCover = Array.from(document.querySelectorAll(
+                        '[class*="default-cover"]'
+                    )).find(visible);
+                    const pageBusy = Array.from(document.querySelectorAll(
+                        '[class*="uploading"], [class*="processing"]'
+                    )).some(visible);
+                    const coverBusy = Array.from(document.querySelectorAll(
+                        '[class*="cover"] [class*="loading"], [class*="loading"][class*="cover"]'
+                    )).some(visible);
+
+                    if (!target) {
+                        return {
+                            ready: false,
+                            reason: pageBusy || coverBusy
+                                ? '视频或推荐封面仍在上传/处理中'
+                                : 'cover-full-editor 尚未出现',
+                            hasDefaultCover: !!defaultCover,
+                        };
+                    }
+
+                    const targetBusy = !!target.closest(
+                        '[class*="loading"], [class*="uploading"], [class*="processing"]'
+                    ) || !!target.querySelector(
+                        '[class*="loading"], [class*="uploading"], [class*="processing"]'
+                    );
+                    if (pageBusy || coverBusy || targetBusy) {
+                        return {
+                            ready: false,
+                            reason: '封面编辑入口仍在 loading',
+                            hasDefaultCover: !!defaultCover,
+                        };
+                    }
+
+                    target.scrollIntoView({ block: 'center' });
+                    const r = target.getBoundingClientRect();
+                    return {
+                        ready: true,
+                        kind: 'cover-full-editor',
+                        x: r.x,
+                        y: r.y,
+                        w: r.width,
+                        h: r.height,
+                        text: clean(target.innerText || target.textContent),
+                    };
+                })()
+            """) or {}
+            if state.get("ready"):
+                return state
+            last_reason = state.get("reason") or last_reason
+            self.cdp.sleep(VIDEO_PROCESS_POLL)
+
+        raise CDPError(
+            "等待快手视频上传/处理完成超时："
+            f"{last_reason}；未出现可用 cover-full-editor"
+        )
 
     def _dispatch_file_input_events(self, selector: str):
         """快手上传组件需要真实 input/change 事件才会进入前端上传流程。"""
