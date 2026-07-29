@@ -1768,7 +1768,7 @@ def main():
     parser.add_argument(
         "--account",
         default=None,
-        help="Account name to publish to (default: default account)",
+        help="Account name to publish to (OPC publishing: edge)",
     )
 
     # CDP port
@@ -1842,7 +1842,7 @@ def main():
     if reuse_existing_tab:
         print("[pipeline] Tab selection mode: prefer reusing existing tab.")
     if local_mode:
-        if not ensure_chrome(port=port, headless=headless, account=account):
+        if not ensure_chrome(port=port, headless=headless, account=cache_account_name):
             print("Error: Failed to start Chrome.", file=sys.stderr)
             sys.exit(2)
     else:
@@ -1899,7 +1899,7 @@ def main():
                 if local_mode:
                     # Auto-fallback: restart Chrome in headed mode for QR login
                     print("[pipeline] Headless mode: not logged in. Switching to headed mode for login...")
-                    restart_chrome(port=port, headless=False, account=account)
+                    restart_chrome(port=port, headless=False, account=cache_account_name)
                     publisher.connect(reuse_existing_tab=reuse_existing_tab)
                     publisher.open_login_page()
                 else:

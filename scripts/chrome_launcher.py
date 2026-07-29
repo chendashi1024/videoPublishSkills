@@ -1,9 +1,9 @@
 """
 Chrome launcher with CDP remote debugging support.
 
-Manages a dedicated Chrome instance for Xiaohongshu publishing:
+Manages a Chrome/Edge instance for publishing:
 - Detects if Chrome is already listening on the debug port
-- Launches Chrome with a dedicated user-data-dir for login persistence
+- Launches Edge/Chrome with a persistent user-data-dir for login reuse
 - Waits for the debug port to become available
 - Supports headless mode for automated publishing without GUI
 - Supports switching between headless and headed mode (e.g. for login)
@@ -20,6 +20,9 @@ from typing import Optional
 CDP_PORT = 9222
 PROFILE_DIR_NAME = "XiaohongshuProfile"
 STARTUP_TIMEOUT = 15  # seconds to wait for Chrome to start
+EDGE_ACCOUNT_NAME = "edge"
+EDGE_USER_DATA_DIR_ENV = "VIDEO_PUBLISH_EDGE_USER_DATA_DIR"
+EDGE_PROFILE_DIR = "/Users/chenchen/Documents/cc-code/XiaohongshuSkills/edge_profile"
 
 # Track the Chrome process we launched so we can kill it later
 _chrome_process: subprocess.Popen | None = None
@@ -93,15 +96,15 @@ def get_user_data_dir(account: Optional[str] = None) -> str:
     Return the Chrome/Edge profile directory path for a given account.
 
     Args:
-        account: Account name. If None, uses the default account from account_manager.
-                 Special account "edge" uses the Edge profile shared by existing
-                 Moqijob publishing flow.
+        account: Account name. If None, uses the account-manager default.
+                 Special account "edge" uses the persistent OPC Edge/CDP profile,
+                 or VIDEO_PUBLISH_EDGE_USER_DATA_DIR when set.
 
     Returns:
         Path to the browser user-data-dir for this account.
     """
-    if account == "edge":
-        profile_dir = "/Users/chenchen/Documents/cc-code/XiaohongshuSkills/edge_profile"
+    if account == EDGE_ACCOUNT_NAME:
+        profile_dir = os.environ.get(EDGE_USER_DATA_DIR_ENV) or EDGE_PROFILE_DIR
         os.makedirs(profile_dir, exist_ok=True)
         return profile_dir
 
@@ -138,7 +141,7 @@ def launch_chrome(
     Args:
         port: CDP remote debugging port.
         headless: If True, launch Chrome in headless mode (no GUI window).
-        account: Account name to use. If None, uses the default account.
+        account: Account name to use. If None, uses the account-manager default.
 
     Returns the Popen object if a new process was started, or None if Chrome
     was already running on the target port.
@@ -162,7 +165,7 @@ def launch_chrome(
         "--no-default-browser-check",
     ]
 
-    if account == "edge":
+    if account == EDGE_ACCOUNT_NAME:
         cmd.append("--profile-directory=Default")
 
     if headless:
@@ -176,11 +179,16 @@ def launch_chrome(
     print(f"  profile dir: {user_data_dir}")
     print(f"  debug port : {port}")
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    popen_kwargs = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(cmd, **popen_kwargs)
     _chrome_process = proc
 
     # Wait for the debug port to become available
@@ -290,7 +298,7 @@ def restart_chrome(
     Args:
         port: CDP remote debugging port.
         headless: If True, relaunch in headless mode.
-        account: Account name to use. If None, uses the default account.
+        account: Account name to use. If None, uses the account-manager default.
 
     Returns the Popen object for the new Chrome process.
     """
@@ -314,7 +322,7 @@ def ensure_chrome(
         port: CDP remote debugging port.
         headless: If True, launch in headless mode when starting a new instance.
             If Chrome is already running, this parameter is ignored.
-        account: Account name to use. If None, uses the default account.
+        account: Account name to use. If None, uses the account-manager default.
 
     Returns True if Chrome is available, False otherwise.
     """
@@ -341,7 +349,7 @@ if __name__ == "__main__":
     parser.add_argument("--headless", action="store_true", help="Launch in headless mode")
     parser.add_argument("--kill", action="store_true", help="Kill the running Chrome instance")
     parser.add_argument("--restart", action="store_true", help="Restart Chrome")
-    parser.add_argument("--account", help="Account name to use (default: default account)")
+    parser.add_argument("--account", help="Account name to use (OPC publishing: edge)")
     args = parser.parse_args()
 
     if args.kill:

@@ -106,29 +106,31 @@ class KuaishouPublisherCore(BasePublisher):
             print("[Kuaishou] 未登录：上传页跳转到登录页")
             return False
 
-        has_login_indicator = self.ui.wait_for_element(
-            SELECTORS["login_indicator"],
-            timeout=2,
-        )
         page_state = self.cdp.evaluate("""
             (() => {
                 const text = document.body ? document.body.innerText : '';
                 return {
-                    hasUploadInput: !!document.querySelector('input[type="file"]'),
-                    hasUploadShell: text.includes('发布视频')
-                        || text.includes('上传视频')
-                        || text.includes('作品发布'),
-                    hasLoginText: text.includes('登录')
-                        && (text.includes('扫码') || text.includes('验证码') || text.includes('手机号'))
+                    hasVideoUploadInput: !!document.querySelector(
+                        'input[type="file"][accept*="video"]'
+                    ),
+                    hasEditorForm: !!document.querySelector(
+                        '#work-description-edit, '
+                        + 'div[contenteditable="true"][class*="description"], '
+                        + 'textarea[placeholder*="作品描述"]'
+                    ),
+                    hasLoginCallToAction: text.includes('立即登录')
+                        || text.includes('扫码登录')
+                        || text.includes('验证码登录')
+                        || text.includes('密码登录')
                 };
             })()
         """) or {}
 
         logged_in = bool(
-            has_login_indicator
-            or (
-                (page_state.get("hasUploadInput") or page_state.get("hasUploadShell"))
-                and not page_state.get("hasLoginText")
+            not page_state.get("hasLoginCallToAction")
+            and (
+                page_state.get("hasVideoUploadInput")
+                or page_state.get("hasEditorForm")
             )
         )
         print("[Kuaishou] 已登录" if logged_in else "[Kuaishou] 未登录")
@@ -265,7 +267,9 @@ class KuaishouPublisherCore(BasePublisher):
         file_input = self.ui.find_element(SELECTORS["video_upload_input"])
         if not file_input:
             # 尝试备用选择器
-            file_input = self.ui.find_element(SELECTORS["video_upload_input_name"])
+            fallback_selector = SELECTORS.get("video_upload_input_name")
+            if fallback_selector:
+                file_input = self.ui.find_element(fallback_selector)
 
         if not file_input:
             raise CDPError("未找到视频上传输入框")

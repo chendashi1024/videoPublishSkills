@@ -82,8 +82,19 @@ python scripts/cdp_publish.py --reuse-existing-tab search-feeds --keyword "春�
 ### 0) 启动 / 测试浏览器（不发布）
 
 默认 CDP 地址为 `127.0.0.1:9222`，可通过 `--host` / `--port` 指定（例如 `10.0.0.12:9222`）。
-B站视频填稿默认固定选择「知识」分区，并固定创作声明「个人观点，仅供参考」。标签仍从正文最后一行 `#标签` 提取后写入 B站标签栏，简介不保留话题尾巴。
 
+OPC 视频发布固定使用 `--account edge`，对应持久化 Microsoft Edge/CDP Profile
+`/Users/chenchen/Documents/cc-code/XiaohongshuSkills/edge_profile`。需要临时覆盖该目录时设置
+`VIDEO_PUBLISH_EDGE_USER_DATA_DIR`。未传 `--account` 时仍使用账号管理器中的默认账号。
+
+视频发布固定进入以下平台后台地址：
+
+- 抖音：`https://creator.douyin.com/creator-micro/content/upload`
+- B站：`https://member.bilibili.com/platform/upload/video/frame`
+- 小红书：`https://creator.xiaohongshu.com/publish/publish?source=official`
+- 快手：`https://cp.kuaishou.com/article/publish/video?tabType=1`
+
+B站视频填稿默认固定选择「知识」分区，并固定创作声明「个人观点，仅供参考」。标签仍从正文最后一行 `#标签` 提取后写入 B站标签栏，简介不保留话题尾巴。
 
 ```bash
 # 启动测试浏览器（有窗口，推荐）

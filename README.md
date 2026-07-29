@@ -42,9 +42,13 @@ pip install -r requirements.txt
 python scripts/cdp_publish.py login
 ```
 
-在弹出的 Chrome 窗口中扫码登录小红书。
+在弹出的 Edge/Chrome 窗口中扫码登录小红书。
 
 ### 2. 启动/测试浏览器（不发布）
+
+OPC 视频发布固定使用 `--account edge`，对应持久化 Microsoft Edge/CDP Profile
+`/Users/chenchen/Documents/cc-code/XiaohongshuSkills/edge_profile`。需要临时覆盖该目录时设置
+`VIDEO_PUBLISH_EDGE_USER_DATA_DIR`。未传 `--account` 时仍使用账号管理器中的默认账号。
 
 ```bash
 # 启动测试浏览器（有窗口，推荐）
@@ -197,6 +201,13 @@ python scripts/cdp_publish.py content-data --csv-file "/abs/path/content_data.cs
 
 统一发布入口，一条命令完成全部流程。
 
+视频发布固定进入以下平台后台地址：
+
+- 抖音：`https://creator.douyin.com/creator-micro/content/upload`
+- B站：`https://member.bilibili.com/platform/upload/video/frame`
+- 小红书：`https://creator.xiaohongshu.com/publish/publish?source=official`
+- 快手：`https://cp.kuaishou.com/article/publish/video?tabType=1`
+
 ```bash
 python scripts/publish_pipeline.py [选项]
 
@@ -215,7 +226,7 @@ python scripts/publish_pipeline.py [选项]
   --port PORT            CDP 端口（默认 9222）
   --headless             无头模式（无浏览器窗口）
   --reuse-existing-tab   优先复用已有标签页（默认关闭）
-  --account NAME         指定账号
+  --account NAME         指定账号（OPC 视频发布固定使用 edge）
   --auto-publish         兼容参数：默认已自动发布（可省略）
   --preview              预览模式：仅填充内容，不点击发布
 ```
