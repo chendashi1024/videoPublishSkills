@@ -106,25 +106,52 @@ class KuaishouPublisherCore(BasePublisher):
             print("[Kuaishou] 未登录：上传页跳转到登录页")
             return False
 
-        page_state = self.cdp.evaluate("""
-            (() => {
-                const text = document.body ? document.body.innerText : '';
-                return {
-                    hasVideoUploadInput: !!document.querySelector(
-                        'input[type="file"][accept*="video"]'
-                    ),
-                    hasEditorForm: !!document.querySelector(
-                        '#work-description-edit, '
-                        + 'div[contenteditable="true"][class*="description"], '
-                        + 'textarea[placeholder*="作品描述"]'
-                    ),
-                    hasLoginCallToAction: text.includes('立即登录')
-                        || text.includes('扫码登录')
-                        || text.includes('验证码登录')
-                        || text.includes('密码登录')
-                };
-            })()
-        """) or {}
+        deadline = time.time() + LOGIN_PAGE_READY_TIMEOUT
+        page_state = {}
+        while time.time() < deadline:
+            page_state = self.cdp.evaluate("""
+                (() => {
+                    const visible = (el) => {
+                        if (!el) return false;
+                        const style = getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.display !== 'none'
+                            && style.visibility !== 'hidden'
+                            && Number(style.opacity || '1') !== 0
+                            && rect.width > 0
+                            && rect.height > 0;
+                    };
+                    const loginTexts = new Set([
+                        '立即登录', '扫码登录', '验证码登录', '密码登录'
+                    ]);
+                    const hasVisibleLoginCallToAction = Array.from(
+                        document.querySelectorAll('button, a, div, span')
+                    ).some((el) =>
+                        visible(el)
+                        && loginTexts.has(
+                            String(el.innerText || el.textContent || '').trim()
+                        )
+                    );
+                    return {
+                        hasVideoUploadInput: !!document.querySelector(
+                            'input[type="file"][accept*="video"]'
+                        ),
+                        hasEditorForm: !!document.querySelector(
+                            '#work-description-edit, '
+                            + 'div[contenteditable="true"][class*="description"], '
+                            + 'textarea[placeholder*="作品描述"]'
+                        ),
+                        hasLoginCallToAction: hasVisibleLoginCallToAction
+                    };
+                })()
+            """) or {}
+            if (
+                page_state.get("hasLoginCallToAction")
+                or page_state.get("hasVideoUploadInput")
+                or page_state.get("hasEditorForm")
+            ):
+                break
+            self.cdp.sleep(0.5)
 
         logged_in = bool(
             not page_state.get("hasLoginCallToAction")

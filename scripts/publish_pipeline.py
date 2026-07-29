@@ -333,22 +333,36 @@ def _upload_douyin_cover_from_modal(
     timing_jitter: float = 0.25,
 ) -> bool:
     """在抖音封面弹窗里通过主上传区上传封面，并让当前裁剪区切到上传图。"""
-    upload_rect = _evaluate_js(publisher, r"""
-        (() => {
-            const candidates = Array.from(document.querySelectorAll(
-                '.dy-creator-content-modal .upload-ZOJTUA, '
-                + '.dy-creator-content-modal-wrap .upload-ZOJTUA'
-            ));
-            for (const el of candidates) {
-                const text = (el.innerText || el.textContent || '').trim();
-                const r = el.getBoundingClientRect();
-                if (text.includes('上传封面') && r.width > 0 && r.height > 0) {
-                    return { x: r.x, y: r.y, w: r.width, h: r.height };
+    upload_rect = None
+    deadline = time.time() + 180
+    while time.time() < deadline:
+        upload_rect = _evaluate_js(publisher, r"""
+            (() => {
+                const candidates = Array.from(document.querySelectorAll(
+                    '.dy-creator-content-modal .upload-ZOJTUA, '
+                    + '.dy-creator-content-modal-wrap .upload-ZOJTUA'
+                ));
+                for (const el of candidates) {
+                    const text = (el.innerText || el.textContent || '').trim();
+                    const r = el.getBoundingClientRect();
+                    const disabled = String(el.className || '').includes('disabled')
+                        || el.getAttribute('aria-disabled') === 'true'
+                        || Boolean(el.querySelector('.semi-upload-disabled'));
+                    if (
+                        text.includes('上传封面')
+                        && r.width > 0
+                        && r.height > 0
+                        && !disabled
+                    ) {
+                        return { x: r.x, y: r.y, w: r.width, h: r.height };
+                    }
                 }
-            }
-            return null;
-        })()
-    """)
+                return null;
+            })()
+        """)
+        if upload_rect:
+            break
+        time.sleep(1)
     if not upload_rect:
         return False
 
@@ -975,6 +989,8 @@ def _upload_douyin_covers(
         timing_jitter=timing_jitter,
         horizontal_prompt_action="设置横封面" if horizontal_cover_path else "暂不设置",
     )
+    if not vertical_ok:
+        raise CDPError("抖音竖封面未上传或未验证，停止进入可发布状态")
 
     if horizontal_cover_path:
         prompt_clicked = _click_douyin_horizontal_cover_prompt(
@@ -982,13 +998,15 @@ def _upload_douyin_covers(
             "设置横封面",
             timing_jitter,
         )
-        _upload_douyin_cover_card(
+        horizontal_ok = _upload_douyin_cover_card(
             publisher,
             horizontal_cover_path,
             "横封面4:3",
             timing_jitter=timing_jitter,
             use_current_modal=prompt_clicked,
         )
+        if not horizontal_ok:
+            raise CDPError("抖音横封面未上传或未验证，停止进入可发布状态")
     elif _click_douyin_horizontal_cover_prompt(
         publisher,
         "暂不设置",
@@ -1647,9 +1665,9 @@ def _select_bilibili_tags(
         if tag in names:
             print(f"[pipeline] Bilibili tag set: {tag}")
     if missing:
-        print(
-            "[pipeline] Warning: Some Bilibili tags were not set: "
-            f"{', '.join(missing)}"
+        raise CDPError(
+            "B站标签未完整写入，停止进入可发布状态: "
+            + ", ".join(missing)
         )
 
 

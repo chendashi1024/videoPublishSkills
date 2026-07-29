@@ -605,19 +605,16 @@ class BilibiliPublisherCore(BasePublisher):
 
         opened = self.cdp.evaluate(r"""
             (() => {
-                const candidates = Array.from(document.querySelectorAll(
-                    [
-                        'span.edit-text',
-                        '.cover-img span',
-                        '.cover-main span',
-                        '.cover-item span',
-                        '[class*="cover"] span',
-                        '[class*="cover"] button'
-                    ].join(',')
+                const fallbackCandidates = Array.from(document.querySelectorAll(
+                    'span.edit-text, .cover-img span, .cover-main span, '
+                    + '.cover-item span, [class*="cover"] span, [class*="cover"] button'
                 ));
-                const target = candidates.find((el) =>
-                    (el.textContent || '').trim().includes('封面设置')
-                );
+                const target = document.querySelector('.cover-empty-pill')
+                    || fallbackCandidates.find((el) =>
+                        ['添加主封面', '封面设置'].some((text) =>
+                            (el.textContent || '').trim().includes(text)
+                        )
+                    );
                 if (!target) return false;
                 target.scrollIntoView({ block: 'center' });
                 const r = target.getBoundingClientRect();
@@ -636,19 +633,14 @@ class BilibiliPublisherCore(BasePublisher):
         """)
 
         if not opened:
-            print("[Bilibili] 未找到封面设置入口，跳过")
-            return
+            raise CDPError("未找到 B站添加主封面入口")
 
         self.cdp.sleep(1.2)
 
-        document = self.cdp.send("DOM.getDocument", {
-            "depth": -1,
-            "pierce": True,
-        })
+        document = self.cdp.send("DOM.getDocument")
         root_id = document.get("root", {}).get("nodeId")
         if not root_id:
-            print("[Bilibili] 未能读取封面编辑器 DOM，跳过")
-            return
+            raise CDPError("未能读取 B站封面编辑器 DOM")
 
         query = self.cdp.send("DOM.querySelector", {
             "nodeId": root_id,
@@ -656,23 +648,33 @@ class BilibiliPublisherCore(BasePublisher):
         })
         node_id = query.get("nodeId")
         if not node_id:
-            print("[Bilibili] 未找到封面编辑器图片上传输入框，跳过")
-            return
+            raise CDPError("未找到 B站封面编辑器图片上传输入框")
 
         self.cdp.send("DOM.setFileInputFiles", {
             "files": [cover_path],
             "nodeId": node_id,
         })
+        self._dispatch_cover_input_events()
 
-        self.cdp.sleep(2.5)
+        self.cdp.sleep(3)
 
         has_preview = self.cdp.evaluate(r"""
-            (() => Array.from(document.querySelectorAll('.cover-editor img')).some((img) =>
-                img.src.startsWith('blob:') && img.naturalWidth > 0 && img.naturalHeight > 0
-            ))()
+            (() => {
+                const hasBlobImage = Array.from(
+                    document.querySelectorAll('.cover-editor img')
+                ).some((img) =>
+                    img.src.startsWith('blob:')
+                    && img.naturalWidth > 0
+                    && img.naturalHeight > 0
+                );
+                const uploadArea = document.querySelector(
+                    '.cover-editor .upload-area.has-image'
+                );
+                return hasBlobImage || Boolean(uploadArea);
+            })()
         """)
         if not has_preview:
-            print("[Bilibili] 封面上传后未检测到预览图，请发布前人工检查")
+            raise CDPError("B站封面上传后未检测到预览图")
 
         completed = self.cdp.evaluate(r"""
             (() => {
@@ -682,7 +684,9 @@ class BilibiliPublisherCore(BasePublisher):
                 const target = candidates.find((el) => {
                     const text = (el.innerText || el.textContent || '').trim();
                     const r = el.getBoundingClientRect();
-                    return text === '完成' && r.width > 0 && r.height > 0;
+                    return ['完成', '确定'].includes(text)
+                        && r.width > 0
+                        && r.height > 0;
                 });
                 if (!target) return false;
                 const r = target.getBoundingClientRect();
@@ -700,11 +704,26 @@ class BilibiliPublisherCore(BasePublisher):
             })()
         """)
         if not completed:
-            print("[Bilibili] 未找到封面编辑器完成按钮，请发布前人工确认")
-            return
+            raise CDPError("未找到 B站封面编辑器完成按钮")
 
         self.cdp.sleep(2)
         print("[Bilibili] 封面上传完成")
+
+    def _dispatch_cover_input_events(self):
+        """补发 B站封面文件输入事件，确保重复选择同一文件也能生效。"""
+        result = self.cdp.evaluate(r"""
+            (() => {
+                const input = document.querySelector(
+                    '.cover-editor input[type="file"][accept*="image"]'
+                );
+                if (!input) return { ok: false };
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                return { ok: true };
+            })()
+        """) or {}
+        if not result.get("ok"):
+            raise CDPError("未能触发 B站封面文件输入事件")
 
     def _click_publish(self):
         """点击发布按钮"""

@@ -13,7 +13,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # 快手 URLs
 # ============================================================================
 
-KUAISHOU_CREATOR_URL = "https://cp.kuaishou.com/article/publish/video"
+KUAISHOU_CREATOR_URL = "https://cp.kuaishou.com/article/publish/video?tabType=1"
+KUAISHOU_CREATOR_URL_PREFIX = "https://cp.kuaishou.com/article/publish/video"
 KUAISHOU_HOME_URL = "https://www.kuaishou.com"
 KUAISHOU_CREATOR_LOGIN_CHECK_URL = "https://cp.kuaishou.com"
 
@@ -66,6 +67,7 @@ SELECTORS = {
 # ============================================================================
 
 PAGE_LOAD_WAIT = 3  # 页面加载等待时间
+LOGIN_PAGE_READY_TIMEOUT = 12  # 上传页首屏异步渲染等待时间
 UPLOAD_WAIT = 6  # 上传后等待编辑器出现的时间
 UPLOAD_FORM_TIMEOUT = 180  # 上传后等待发布表单出现的时间
 VIDEO_PROCESS_TIMEOUT = 180  # 视频处理超时时间
