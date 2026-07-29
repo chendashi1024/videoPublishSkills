@@ -72,6 +72,7 @@ UPLOAD_WAIT = 6  # 上传后等待编辑器出现的时间
 UPLOAD_FORM_TIMEOUT = 180  # 上传后等待发布表单出现的时间
 VIDEO_PROCESS_TIMEOUT = 180  # 视频处理超时时间
 VIDEO_PROCESS_POLL = 3  # 视频处理状态轮询间隔
+PUBLISH_RESULT_ATTEMPTS = 30  # 点击发布后的终态轮询次数
 ACTION_INTERVAL = 1  # 操作间隔时间
 
 # ============================================================================

@@ -676,10 +676,80 @@ class KuaishouPublisherCore(BasePublisher):
         """点击发布按钮"""
         print("[Kuaishou] 点击发布按钮...")
 
-        self.ui.click_element(SELECTORS["publish_button"])
+        result = self.cdp.evaluate(r"""
+            (() => {
+                const visible = (el) => {
+                    if (!el) return false;
+                    const style = getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && Number(style.opacity || '1') !== 0
+                        && rect.width > 0
+                        && rect.height > 0;
+                };
+                const candidates = Array.from(document.querySelectorAll(
+                    'button, [class*="_button_"]'
+                ));
+                const target = candidates.find((el) => {
+                    const text = String(
+                        el.innerText || el.textContent || ''
+                    ).replace(/\s+/g, ' ').trim();
+                    return text === '发布'
+                        && visible(el)
+                        && String(el.className || '').includes('_button-primary_');
+                });
+                if (!target) return { ok: false, reason: 'primary publish control not found' };
+                const rect = target.getBoundingClientRect();
+                const options = {
+                    bubbles: true,
+                    cancelable: true,
+                    clientX: rect.x + rect.width / 2,
+                    clientY: rect.y + rect.height / 2,
+                    view: window,
+                };
+                for (const type of [
+                    'pointerover', 'mouseover', 'pointerdown', 'mousedown',
+                    'pointerup', 'mouseup', 'click'
+                ]) {
+                    target.dispatchEvent(new MouseEvent(type, options));
+                }
+                return { ok: true, tag: target.tagName };
+            })()
+        """) or {}
+        if not result.get("ok"):
+            raise CDPError(f"未找到可点击的快手发布主控件: {result}")
         self.cdp.sleep(2)
 
-        print("[Kuaishou] 发布完成")
+        terminal_state = {}
+        for _ in range(PUBLISH_RESULT_ATTEMPTS):
+            terminal_state = self.cdp.evaluate(r"""
+                (() => {
+                    const text = String(
+                        document.body?.innerText || document.body?.textContent || ''
+                    );
+                    const terminalTexts = [
+                        '内容发布成功', '作品发布成功', '发布成功'
+                    ];
+                    return {
+                        published: terminalTexts.some((item) => text.includes(item)),
+                        text: terminalTexts.find((item) => text.includes(item)) || '',
+                        url: location.href,
+                    };
+                })()
+            """) or {}
+            if terminal_state.get("published"):
+                print(
+                    "[Kuaishou] 发布完成，终态: "
+                    f"{terminal_state.get('text')}"
+                )
+                return terminal_state.get("url")
+            self.cdp.sleep(1)
+
+        raise CDPError(
+            "快手发布按钮已点击，但未检测到发布成功终态: "
+            f"{terminal_state}"
+        )
 
     # ========================================================================
     # 平台信息
