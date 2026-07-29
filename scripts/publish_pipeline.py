@@ -433,6 +433,22 @@ def _xiaohongshu_cover_zoom_ready(
     )
 
 
+def _xiaohongshu_cover_state_ready(state: dict) -> bool:
+    """兼容新旧小红书发布页，确认已应用真实 3:4 封面。"""
+    cover_style = str(state.get("coverStyle") or "")
+    has_background = (
+        "background-image" in cover_style
+        and "url(" in cover_style
+        and "background-image: none" not in cover_style
+    )
+    vertical = bool(
+        state.get("previewVertical")
+        or state.get("coverVertical")
+        or "0.75 / 1" in cover_style
+    )
+    return has_background and vertical
+
+
 def _find_xiaohongshu_cover_confirm_rect(publisher):
     """只在小红书封面弹窗内查找确定按钮。"""
     return _evaluate_js(publisher, r"""
@@ -727,11 +743,13 @@ def _upload_xiaohongshu_video_cover(
                 const coverVertical = !!coverRect && coverRect.height > coverRect.width;
                 return {
                     modalOpen,
-                    coverApplied: previewVertical
-                        && (coverVertical || coverStyle.includes('0.75 / 1')),
+                    previewVertical,
+                    coverVertical,
+                    coverStyle,
                 };
             })()
         """) or {}
+        cover_state["coverApplied"] = _xiaohongshu_cover_state_ready(cover_state)
         if cover_state.get("coverApplied") and cover_state.get("modalOpen"):
             close_rect = _evaluate_js(publisher, r"""
                 (() => {

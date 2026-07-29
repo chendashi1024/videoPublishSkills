@@ -9,6 +9,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from scripts import publish_pipeline
 from scripts.publish_pipeline import (
     _find_xiaohongshu_cover_confirm_rect,
     _xiaohongshu_cover_zoom_ready,
@@ -65,6 +66,41 @@ class XiaohongshuCoverConfirmScopeTest(unittest.TestCase):
         self.assertIn("candidate.querySelector", publisher.expression)
         self.assertIn("modal.querySelectorAll('button')", publisher.expression)
         self.assertNotIn("document.querySelectorAll('.cover-modal button", publisher.expression)
+
+
+class XiaohongshuCoverAppliedStateTest(unittest.TestCase):
+    def test_current_three_four_background_cover_is_ready(self):
+        ready = getattr(
+            publish_pipeline,
+            "_xiaohongshu_cover_state_ready",
+            lambda _state: False,
+        )
+        self.assertTrue(
+            ready({
+                "modalOpen": False,
+                "previewVertical": False,
+                "coverVertical": True,
+                "coverStyle": (
+                    'background-image: url("https://ros-preview.xhscdn.com/cover"); '
+                    "aspect-ratio: 0.75 / 1;"
+                ),
+            })
+        )
+
+    def test_three_four_placeholder_without_background_is_not_ready(self):
+        ready = getattr(
+            publish_pipeline,
+            "_xiaohongshu_cover_state_ready",
+            lambda _state: False,
+        )
+        self.assertFalse(
+            ready({
+                "modalOpen": False,
+                "previewVertical": False,
+                "coverVertical": True,
+                "coverStyle": "aspect-ratio: 0.75 / 1;",
+            })
+        )
 
 
 if __name__ == "__main__":

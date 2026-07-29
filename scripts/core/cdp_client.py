@@ -131,8 +131,9 @@ class CDPClient:
                     print(f"[CDPClient] 复用已有标签页: {t.get('url')}")
                     return t["webSocketDebuggerUrl"]
 
-        # 复用第一个标签页（减少窗口切换）
-        if reuse_existing_tab and pages:
+        # 未指定平台前缀时才允许复用任意标签页；指定前缀但没有命中时必须新建，
+        # 避免跨平台覆盖尚未发布的草稿。
+        if reuse_existing_tab and not target_url_prefix and pages:
             url = pages[0].get("url", "")
             print(f"[CDPClient] 复用已有标签页: {url}")
             return pages[0]["webSocketDebuggerUrl"]
