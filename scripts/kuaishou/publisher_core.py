@@ -24,7 +24,7 @@ if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
 from core.base_publisher import BasePublisher
-from core.cdp_client import CDPClient, CDPError
+from core.cdp_client import CDPClient, CDPError, ManualTakeoverDetected
 from core.login_manager import LoginManager
 from core.ui_automator import UIAutomator
 from .config import *
@@ -260,6 +260,8 @@ class KuaishouPublisherCore(BasePublisher):
             else:
                 return {"status": "success", "message": "视频内容已填写完成，等待手动发布"}
 
+        except ManualTakeoverDetected:
+            raise
         except Exception as e:
             return {"status": "error", "message": f"发布失败: {str(e)}"}
 
@@ -324,13 +326,34 @@ class KuaishouPublisherCore(BasePublisher):
         self.cdp.sleep(UPLOAD_WAIT)
         print("[Kuaishou] 视频上传中...")
 
-        form_ready = self.ui.wait_for_element(
-            SELECTORS["content_input"],
-            timeout=self._active_video_wait_timeout,
-            poll_interval=2,
+        self._wait_for_upload_form()
+
+    def _raise_if_manual_takeover(self):
+        """编辑页被人工发布或导航离开后，返回不可重试状态。"""
+        current_url = self.cdp.get_current_url()
+        if not current_url.startswith(KUAISHOU_CREATOR_URL_PREFIX):
+            raise ManualTakeoverDetected(current_url)
+
+    def _wait_for_upload_form(self):
+        """等待作品描述表单，同时监测用户人工接管。"""
+        wait_timeout = getattr(
+            self,
+            "_active_video_wait_timeout",
+            UPLOAD_FORM_TIMEOUT,
         )
-        if not form_ready:
-            raise CDPError("快手上传后未进入作品描述表单")
+        deadline = time.time() + wait_timeout
+        while time.time() < deadline:
+            self._raise_if_manual_takeover()
+            form_ready = self.ui.find_element(
+                SELECTORS["content_input"],
+                timeout=2,
+            )
+            if form_ready:
+                return form_ready
+            self.cdp.sleep(2)
+
+        self._raise_if_manual_takeover()
+        raise CDPError("快手上传后未进入作品描述表单")
 
     def _wait_video_processing(self):
         """等待视频处理完成"""
@@ -556,6 +579,7 @@ class KuaishouPublisherCore(BasePublisher):
         last_reason = "cover-full-editor 尚未出现"
 
         while time.time() < deadline:
+            self._raise_if_manual_takeover()
             state = self.cdp.evaluate(r"""
                 (() => {
                     const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();

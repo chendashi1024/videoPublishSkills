@@ -17,6 +17,14 @@ class CDPError(Exception):
     """CDP 通信错误"""
 
 
+class ManualTakeoverDetected(CDPError):
+    """用户已在浏览器中接管发布流程，调度方不得重试填稿。"""
+
+    def __init__(self, url: str):
+        self.url = url
+        super().__init__(f"检测到人工接管，当前页面已离开填稿页：{url}")
+
+
 class CDPClient:
     """
     Chrome DevTools Protocol 客户端

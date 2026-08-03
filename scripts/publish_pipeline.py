@@ -36,7 +36,7 @@ Usage:
     python publish_pipeline.py --title "标题" --content "正文" --video-url "https://example.com/video.mp4"
 
 Exit codes:
-    0 = success (PUBLISHED, or READY_TO_PUBLISH in preview mode)
+    0 = success (PUBLISHED, READY_TO_PUBLISH, or MANUAL_TAKEOVER_DETECTED)
     1 = not logged in (NOT_LOGGED_IN) - headless auto-fallback will restart headed
     2 = error (see stderr)
 """
@@ -65,6 +65,7 @@ if SCRIPT_DIR not in sys.path:
 
 from chrome_launcher import ensure_chrome, restart_chrome
 from cdp_publish import XiaohongshuPublisher, CDPError
+from core.cdp_client import ManualTakeoverDetected
 from image_downloader import ImageDownloader
 from run_lock import SingleInstanceError, single_instance
 
@@ -2063,6 +2064,14 @@ def main():
                 )
 
         print("FILL_STATUS: READY_TO_PUBLISH")
+    except ManualTakeoverDetected as e:
+        print("FILL_STATUS: MANUAL_TAKEOVER_DETECTED")
+        print(f"[pipeline] {e}")
+        publisher.disconnect()
+        if downloader:
+            downloader.cleanup()
+        print("[pipeline] Done without retrying fill.")
+        return
     except CDPError as e:
         print(f"Error during form fill: {e}", file=sys.stderr)
         if downloader:

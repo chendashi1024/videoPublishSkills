@@ -26,6 +26,9 @@ class _FakeCDP:
         self.states = list(states)
         self.index = 0
 
+    def get_current_url(self):
+        return "https://cp.kuaishou.com/article/publish/video?tabType=1"
+
     def evaluate(self, script):
         compact_script = "".join(script.split())
         if "cover-full-editor" in compact_script and "scrollIntoView" in compact_script:

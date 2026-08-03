@@ -15,6 +15,9 @@ from scripts.kuaishou.publisher_core import KuaishouPublisherCore
 
 
 class _UploadCDP:
+    def get_current_url(self):
+        return "https://cp.kuaishou.com/article/publish/video?tabType=1"
+
     def send(self, _method, _params):
         return {}
 
@@ -29,7 +32,7 @@ class _UploadUI:
     def __init__(self):
         self.timeout = None
 
-    def find_element(self, _selector):
+    def find_element(self, _selector, timeout=None):
         return {"nodeId": 1}
 
     def wait_for_element(self, _selector, *, timeout, poll_interval):
@@ -43,6 +46,9 @@ class _CoverCDP:
             {"ready": False, "reason": "封面编辑入口仍在 loading"},
             {"ready": True, "x": 1, "y": 2, "w": 3, "h": 4},
         ]
+
+    def get_current_url(self):
+        return "https://cp.kuaishou.com/article/publish/video?tabType=1"
 
     def evaluate(self, _script):
         return self.states.pop(0)
@@ -64,8 +70,7 @@ class KuaishouUploadTimeoutTest(unittest.TestCase):
         ):
             publisher._upload_video("/tmp/large.mov")
 
-        self.assertGreaterEqual(publisher.ui.timeout, 540)
-        self.assertEqual(publisher._active_video_wait_timeout, publisher.ui.timeout)
+        self.assertGreaterEqual(publisher._active_video_wait_timeout, 540)
 
     def test_cover_wait_reuses_the_large_video_budget(self):
         publisher = KuaishouPublisherCore.__new__(KuaishouPublisherCore)
