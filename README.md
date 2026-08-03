@@ -236,6 +236,7 @@ python scripts/publish_pipeline.py [选项]
 说明：当控制端运行在 WSL、但媒体路径使用 Windows/UNC（如 `\\wsl.localhost\...`）时，可加 `--skip-file-check` 跳过 Linux 侧 `isfile` 预校验。
 说明：`publish_pipeline.py` 默认会自动点击发布；如需人工确认，请显式加 `--preview`。OPC 视频工作流必须使用 `--preview`，只填稿不自动发布。
 说明：抖音竖封面上传后可能弹出“设置横封面获取更多流量”引导。流程会按需处理：有横封面时点击“设置横封面”继续上传横封面，没有横封面时点击“暂不设置”；没弹窗则跳过。
+说明：快手会按视频文件大小动态计算表单、转码和封面生成等待预算，大视频不再因固定 180 秒上限被过早判定失败。
 
 ### cdp_publish.py
 

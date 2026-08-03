@@ -11,6 +11,7 @@
 """
 
 import json
+import math
 import os
 import sys
 import time
@@ -290,6 +291,18 @@ class KuaishouPublisherCore(BasePublisher):
         """上传视频"""
         print(f"[Kuaishou] 上传视频: {video_path}")
 
+        file_size = os.path.getsize(video_path)
+        estimated_upload_seconds = math.ceil(
+            file_size / MIN_UPLOAD_RATE_BYTES_PER_SECOND
+        )
+        self._active_video_wait_timeout = min(
+            MAX_VIDEO_WAIT_TIMEOUT,
+            max(
+                UPLOAD_FORM_TIMEOUT,
+                estimated_upload_seconds + UPLOAD_PROCESS_GRACE,
+            ),
+        )
+
         # 查找文件输入框
         file_input = self.ui.find_element(SELECTORS["video_upload_input"])
         if not file_input:
@@ -313,7 +326,7 @@ class KuaishouPublisherCore(BasePublisher):
 
         form_ready = self.ui.wait_for_element(
             SELECTORS["content_input"],
-            timeout=UPLOAD_FORM_TIMEOUT,
+            timeout=self._active_video_wait_timeout,
             poll_interval=2,
         )
         if not form_ready:
@@ -323,8 +336,13 @@ class KuaishouPublisherCore(BasePublisher):
         """等待视频处理完成"""
         print("[Kuaishou] 等待视频处理...")
 
+        wait_timeout = getattr(
+            self,
+            "_active_video_wait_timeout",
+            VIDEO_PROCESS_TIMEOUT,
+        )
         start_time = time.time()
-        while time.time() - start_time < VIDEO_PROCESS_TIMEOUT:
+        while time.time() - start_time < wait_timeout:
             # 检查是否还有处理指示器
             processing = self.ui.find_element(
                 SELECTORS["video_processing_indicator"],
@@ -337,7 +355,7 @@ class KuaishouPublisherCore(BasePublisher):
 
             self.cdp.sleep(VIDEO_PROCESS_POLL)
 
-        raise CDPError(f"视频处理超时（{VIDEO_PROCESS_TIMEOUT}秒）")
+        raise CDPError(f"视频处理超时（{wait_timeout}秒）")
 
     def _fill_content(self, content: str):
         """填写作品描述"""
@@ -529,7 +547,12 @@ class KuaishouPublisherCore(BasePublisher):
 
     def _wait_for_cover_editor_entry(self) -> dict[str, Any]:
         """等待视频和推荐封面处理完成后出现真实封面编辑入口。"""
-        deadline = time.time() + VIDEO_PROCESS_TIMEOUT
+        wait_timeout = getattr(
+            self,
+            "_active_video_wait_timeout",
+            VIDEO_PROCESS_TIMEOUT,
+        )
+        deadline = time.time() + wait_timeout
         last_reason = "cover-full-editor 尚未出现"
 
         while time.time() < deadline:
