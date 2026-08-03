@@ -76,27 +76,27 @@ python scripts/chrome_launcher.py --kill
 ### 3. 发布内容
 
 ```bash
-# 无头模式（推荐，默认自动发布）
-python scripts/publish_pipeline.py --headless \
+# 显式直接发布（会点击最终发布）
+python scripts/publish_pipeline.py --headless --auto-publish \
     --title "文章标题" \
     --content "文章正文" \
     --image-urls "https://example.com/image.jpg"
 
-# 有窗口预览模式（仅填充，不自动点发布）
+# 有窗口交接模式（仅填充，不点发布）
 python scripts/publish_pipeline.py \
     --preview \
     --title "文章标题" \
     --content "文章正文" \
     --image-urls "https://example.com/image.jpg"
 
-# 可选：优先复用已有标签页（减少有窗口模式下切到前台）
+# 默认交接：优先复用已有标签页（减少有窗口模式下切到前台）
 python scripts/publish_pipeline.py --reuse-existing-tab \
     --title "文章标题" \
     --content "文章正文" \
     --image-urls "https://example.com/image.jpg"
 
-# 连接远程 CDP 并发布（远程 Chrome 需已开启调试端口）
-python scripts/publish_pipeline.py --host 10.0.0.12 --port 9222 \
+# 连接远程 CDP 并直接发布（远程 Chrome 需已开启调试端口）
+python scripts/publish_pipeline.py --host 10.0.0.12 --port 9222 --auto-publish \
     --title "文章标题" \
     --content "文章正文" \
     --image-urls "https://example.com/image.jpg"
@@ -227,14 +227,14 @@ python scripts/publish_pipeline.py [选项]
   --headless             无头模式（无浏览器窗口）
   --reuse-existing-tab   优先复用已有标签页（默认关闭）
   --account NAME         指定账号（OPC 视频发布固定使用 edge）
-  --auto-publish         兼容参数：默认已自动发布（可省略）
-  --preview              预览模式：仅填充内容，不点击发布
+  --auto-publish         显式直发：等待可发布后只点击一次
+  --preview              交接模式兼容参数；不写时默认也是交接
 ```
 
 说明：启用 `--reuse-existing-tab` 后，发布流程仍会自动导航到发布页，因此会刷新到目标页面再继续执行。
 说明：当 `--host` 非 `127.0.0.1/localhost` 时为远程模式，会跳过本地 `chrome_launcher.py` 的自动启动/重启逻辑，请确保远程 CDP 地址可达。
 说明：当控制端运行在 WSL、但媒体路径使用 Windows/UNC（如 `\\wsl.localhost\...`）时，可加 `--skip-file-check` 跳过 Linux 侧 `isfile` 预校验。
-说明：`publish_pipeline.py` 默认会自动点击发布；如需人工确认，请显式加 `--preview`。OPC 视频工作流必须使用 `--preview`，只填稿不自动发布。
+说明：`publish_pipeline.py` 默认 HANDOFF，只上传和填稿，不监控后续处理，不点击发布。只有用户明确要求直接发布时才加 `--auto-publish`；点击后结果不明时停止，不得重传或重复点击。
 说明：抖音竖封面上传后可能弹出“设置横封面获取更多流量”引导。流程会按需处理：有横封面时点击“设置横封面”继续上传横封面，没有横封面时点击“暂不设置”；没弹窗则跳过。
 说明：快手会按视频文件大小动态计算表单、转码和封面生成等待预算，大视频不再因固定 180 秒上限被过早判定失败。
 说明：快手填稿等待期间如检测到页面已被用户人工发布或导航离开，返回 `FILL_STATUS: MANUAL_TAKEOVER_DETECTED`。该状态是不可重试的填稿终态，调度方只能转入发布事实核验，不得再次上传。

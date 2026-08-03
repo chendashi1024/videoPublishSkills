@@ -2,7 +2,7 @@
 Unified publish pipeline for Xiaohongshu.
 
 Single CLI entry point that orchestrates:
-  chrome_launcher → login check → image/video download → form fill → publish (default)
+  chrome_launcher → login check → image/video download → form fill → handoff (default)
 
 Usage:
     # Publish immediately after filling (default behavior)
@@ -18,7 +18,7 @@ Usage:
     # Publish to a specific account
     python publish_pipeline.py --account myaccount --title "标题" --content "正文" --image-urls URL1
 
-    # Explicit auto-publish flag (optional compatibility flag)
+    # Explicit direct-publish authorization
     python publish_pipeline.py --title "标题" --content "正文" --image-urls URL1 --auto-publish
 
     # Prefer reusing existing tab (reduce focus switching in headed mode)
@@ -1690,6 +1690,28 @@ def _select_bilibili_tags(
         )
 
 
+def resolve_publish_mode(*, auto_publish: bool, preview: bool) -> str:
+    """解析发布模式：默认只填充交接，直发必须显式授权。"""
+    if auto_publish and preview:
+        raise ValueError("--auto-publish 与 --preview 不能同时使用")
+    return "DIRECT_PUBLISH" if auto_publish else "HANDOFF"
+
+
+def should_execute_direct_publish(mode: str) -> bool:
+    """只有 DIRECT_PUBLISH 模式允许点击最终发布。"""
+    return mode == "DIRECT_PUBLISH"
+
+
+def execute_direct_publish(publisher, *, is_video_mode: bool):
+    """直发前等待媒体可发布，然后只点击一次。"""
+    if is_video_mode:
+        wait_for_processing = getattr(publisher, "_wait_video_processing", None)
+        if not callable(wait_for_processing):
+            raise CDPError("当前平台缺少视频可发布检查，拒绝直接点击发布")
+        wait_for_processing()
+    return publisher._click_publish()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Multi-platform publish pipeline - unified entry point"
@@ -1729,21 +1751,19 @@ def main():
     )
 
     # Publish mode
-    parser.add_argument(
+    publish_mode_group = parser.add_mutually_exclusive_group()
+    publish_mode_group.add_argument(
         "--auto-publish",
         action="store_true",
         default=False,
-        help=(
-            "Compatibility flag. Publish is now the default behavior unless "
-            "--preview is enabled."
-        ),
+        help="Direct-publish mode: wait until publishable, then click publish exactly once",
     )
 
-    parser.add_argument(
+    publish_mode_group.add_argument(
         "--preview",
         action="store_true",
         default=False,
-        help="Preview mode: fill content only and never click publish button",
+        help="Compatibility flag for handoff mode; handoff is already the default",
     )
 
     parser.add_argument(
@@ -1822,6 +1842,10 @@ def main():
     )
 
     args = parser.parse_args()
+    publish_mode = resolve_publish_mode(
+        auto_publish=args.auto_publish,
+        preview=args.preview,
+    )
     platform = args.platform
     host = args.host
     port = args.port
@@ -2078,18 +2102,21 @@ def main():
             downloader.cleanup()
         sys.exit(2)
 
-    # --- Step 5: Publish (optional) ---
-    should_publish = not args.preview
-    if args.auto_publish:
-        print("[pipeline] --auto-publish is now default and can be omitted.")
-    if args.preview:
-        print("[pipeline] Preview mode is on, skipping publish click.")
+    # --- Step 5: Handoff by default; publish only with explicit authorization ---
+    should_publish = should_execute_direct_publish(publish_mode)
+    if not should_publish:
+        print("PUBLISH_MODE: HANDOFF")
+        print("[pipeline] Handoff ready. Leaving the page open without monitoring or clicking publish.")
 
     if should_publish:
+        print("PUBLISH_MODE: DIRECT_PUBLISH")
         print("[pipeline] Step 5: Clicking publish button...")
         try:
-            note_link = publisher._click_publish()
-            print("PUBLISH_STATUS: PUBLISHED")
+            note_link = execute_direct_publish(
+                publisher,
+                is_video_mode=is_video_mode,
+            )
+            print("PUBLISH_STATUS: CLICKED_AWAITING_TERMINAL_CHECK")
             if note_link:
                 print(f"[pipeline] Note published at: {note_link}")
         except CDPError as e:
