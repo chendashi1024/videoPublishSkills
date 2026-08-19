@@ -265,25 +265,72 @@ class BilibiliPublisherCore(BasePublisher):
         self.cdp.sleep(UPLOAD_WAIT)
         print("[Bilibili] 视频上传中...")
 
+    def _read_publish_button_state(self, *, click: bool = False) -> dict[str, Any]:
+        """读取 B站主投稿按钮状态，并可在同一判断中点击一次。"""
+        return self.cdp.evaluate(f"""
+            (() => {{
+                const wanted = '立即投稿';
+                const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                const isVisible = (el) => {{
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && style.opacity !== '0'
+                        && rect.width > 0
+                        && rect.height > 0;
+                }};
+                const candidates = Array.from(document.querySelectorAll(
+                    'button, [role="button"], .submit-add'
+                )).filter((el) => normalize(el.textContent) === wanted);
+                if (!candidates.length) {{
+                    return {{ status: 'missing', reason: '未找到立即投稿按钮' }};
+                }}
+                const visible = candidates.find(isVisible);
+                if (!visible) {{
+                    return {{ status: 'hidden', reason: '立即投稿按钮不可见' }};
+                }}
+                const control = visible.matches('button, [role="button"]')
+                    ? visible
+                    : (visible.closest('button, [role="button"]') || visible);
+                const style = window.getComputedStyle(control);
+                const disabled = Boolean(control.disabled)
+                    || control.getAttribute('aria-disabled') === 'true'
+                    || control.classList.contains('disabled')
+                    || style.pointerEvents === 'none';
+                if (disabled) {{
+                    return {{ status: 'disabled', reason: '立即投稿按钮尚未启用' }};
+                }}
+                if (!{str(click).lower()}) {{
+                    return {{ status: 'ready', reason: '立即投稿按钮可用' }};
+                }}
+                control.scrollIntoView({{ block: 'center' }});
+                control.click();
+                return {{
+                    status: 'clicked',
+                    reason: '已点击立即投稿',
+                    clicked: true,
+                }};
+            }})()
+        """) or {"status": "unknown", "reason": "投稿按钮状态读取失败"}
+
     def _wait_video_processing(self):
-        """等待视频处理完成"""
-        print("[Bilibili] 等待视频处理...")
+        """等待平台主投稿按钮进入可见且启用的权威可投稿状态。"""
+        print("[Bilibili] 等待进入可投稿状态...")
 
         start_time = time.time()
+        last_state = {"status": "unknown", "reason": "尚未读取投稿按钮状态"}
         while time.time() - start_time < VIDEO_PROCESS_TIMEOUT:
-            # 检查是否还有处理指示器
-            processing = self.ui.find_element(
-                SELECTORS["video_processing_indicator"],
-                timeout=2,
-            )
-
-            if not processing:
-                print("[Bilibili] 视频处理完成")
+            last_state = self._read_publish_button_state()
+            if last_state.get("status") == "ready":
+                print("[Bilibili] 已进入可投稿状态")
                 return
-
             self.cdp.sleep(VIDEO_PROCESS_POLL)
 
-        raise CDPError(f"视频处理超时（{VIDEO_PROCESS_TIMEOUT}秒）")
+        reason = last_state.get("reason") or last_state.get("status") or "未知原因"
+        raise CDPError(
+            f"等待可投稿状态超时（{VIDEO_PROCESS_TIMEOUT}秒）: {reason}"
+        )
 
     def _fill_title(self, title: str):
         """填写标题"""
@@ -726,13 +773,16 @@ class BilibiliPublisherCore(BasePublisher):
             raise CDPError("未能触发 B站封面文件输入事件")
 
     def _click_publish(self):
-        """点击发布按钮"""
+        """校验并点击唯一可见、启用的主投稿按钮一次。"""
         print("[Bilibili] 点击发布按钮...")
 
-        self.ui.click_element(SELECTORS["publish_button"])
+        result = self._read_publish_button_state(click=True)
+        if result.get("status") != "clicked" or not result.get("clicked"):
+            reason = result.get("reason") or result.get("status") or "未知原因"
+            raise CDPError(f"B站投稿按钮不可点击: {reason}")
         self.cdp.sleep(2)
 
-        print("[Bilibili] 发布完成")
+        print("[Bilibili] 投稿按钮已点击")
 
     # ========================================================================
     # 平台信息

@@ -36,6 +36,33 @@ class _CaptureEvaluateCDP:
         return {"ok": True}
 
 
+class _PublishButtonCDP:
+    def __init__(self, states):
+        self.states = list(states)
+        self.evaluate_calls = 0
+        self.sleep_calls = 0
+
+    def evaluate(self, _script):
+        self.evaluate_calls += 1
+        if len(self.states) > 1:
+            return self.states.pop(0)
+        return self.states[0]
+
+    def sleep(self, _seconds, minimum_seconds=None):
+        self.sleep_calls += 1
+
+
+class _PersistentProcessingUI:
+    def __init__(self):
+        self.clicked = False
+
+    def find_element(self, _selector, timeout=0):
+        return {"nodeId": 1}
+
+    def click_element(self, _selector):
+        self.clicked = True
+
+
 class PublishFailClosedTest(unittest.TestCase):
     def test_douyin_cover_failure_blocks_ready_status(self):
         with (
@@ -91,6 +118,42 @@ class PublishFailClosedTest(unittest.TestCase):
 
         self.assertIn("new Event('input'", publisher.cdp.script)
         self.assertIn("new Event('change'", publisher.cdp.script)
+
+    def test_bilibili_ready_button_wins_over_stale_processing_node(self):
+        publisher = BilibiliPublisherCore.__new__(BilibiliPublisherCore)
+        publisher.cdp = _PublishButtonCDP([
+            {"status": "ready", "reason": "立即投稿按钮可用"},
+        ])
+        publisher.ui = _PersistentProcessingUI()
+
+        with patch("scripts.bilibili.publisher_core.VIDEO_PROCESS_TIMEOUT", 0.01):
+            publisher._wait_video_processing()
+
+        self.assertEqual(publisher.cdp.evaluate_calls, 1)
+
+    def test_bilibili_disabled_submit_button_blocks_click(self):
+        publisher = BilibiliPublisherCore.__new__(BilibiliPublisherCore)
+        publisher.cdp = _PublishButtonCDP([
+            {"status": "disabled", "reason": "立即投稿按钮尚未启用"},
+        ])
+        publisher.ui = _PersistentProcessingUI()
+
+        with self.assertRaisesRegex(CDPError, "尚未启用"):
+            publisher._click_publish()
+
+        self.assertFalse(publisher.ui.clicked)
+
+    def test_bilibili_ready_submit_button_is_clicked_once(self):
+        publisher = BilibiliPublisherCore.__new__(BilibiliPublisherCore)
+        publisher.cdp = _PublishButtonCDP([
+            {"status": "clicked", "reason": "已点击立即投稿", "clicked": True},
+        ])
+        publisher.ui = _PersistentProcessingUI()
+
+        publisher._click_publish()
+
+        self.assertEqual(publisher.cdp.evaluate_calls, 1)
+        self.assertFalse(publisher.ui.clicked)
 
 
 if __name__ == "__main__":
