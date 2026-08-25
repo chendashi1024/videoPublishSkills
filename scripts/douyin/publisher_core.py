@@ -72,8 +72,19 @@ class DouyinPublisherCore(BasePublisher):
 
     def connect(self, reuse_existing_tab: bool = False):
         """连接到 Chrome"""
+        target_url_prefix = DOUYIN_CREATOR_URL
+        if reuse_existing_tab:
+            editor_url_prefix = (
+                "https://creator.douyin.com/creator-micro/content/post/video"
+            )
+            if any(
+                target.get("type") == "page"
+                and target.get("url", "").startswith(editor_url_prefix)
+                for target in self.cdp.get_targets()
+            ):
+                target_url_prefix = editor_url_prefix
         self.cdp.connect(
-            target_url_prefix=DOUYIN_CREATOR_URL,
+            target_url_prefix=target_url_prefix,
             reuse_existing_tab=reuse_existing_tab,
             default_url=DOUYIN_CREATOR_URL,
         )
