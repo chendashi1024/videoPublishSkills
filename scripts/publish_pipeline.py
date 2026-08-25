@@ -1953,7 +1953,34 @@ def main():
         sys.exit(2)
     try:
         publisher.connect(reuse_existing_tab=reuse_existing_tab)
-        logged_in = publisher.check_login()
+        resume_existing_douyin_draft = False
+        if (
+            platform == "douyin"
+            and publish_mode == "DIRECT_PUBLISH"
+            and reuse_existing_tab
+        ):
+            from douyin.existing_draft import (
+                is_douyin_editor_url,
+                verify_existing_draft,
+            )
+
+            current_url = publisher.cdp.get_current_url()
+            if is_douyin_editor_url(current_url):
+                verify_existing_draft(
+                    publisher.cdp,
+                    expected_title=title,
+                    expected_content=content,
+                )
+                resume_existing_douyin_draft = True
+                logged_in = True
+                print(
+                    "[pipeline] Reusing verified Douyin draft; "
+                    "skipping upload and form fill."
+                )
+            else:
+                logged_in = publisher.check_login()
+        else:
+            logged_in = publisher.check_login()
         if not logged_in:
             publisher.disconnect()
             if headless:
@@ -2040,7 +2067,12 @@ def main():
     platform_content = content
 
     try:
-        if is_video_mode:
+        if resume_existing_douyin_draft:
+            publish_result = {
+                "status": "success",
+                "message": "已验证并复用抖音已填稿页",
+            }
+        elif is_video_mode:
             publish_video_kwargs = {
                 "title": title,
                 "content": platform_content,
@@ -2063,7 +2095,9 @@ def main():
             if isinstance(publish_result, dict) and publish_result.get("status") == "error":
                 raise CDPError(publish_result.get("message") or "图文填稿失败")
 
-        if platform == "douyin" and topic_tags:
+        if resume_existing_douyin_draft:
+            print("FILL_STATUS: REUSED_EXISTING_DRAFT")
+        elif platform == "douyin" and topic_tags:
             _select_douyin_topics(publisher, topic_tags, timing_jitter=timing_jitter)
         elif platform == "kuaishou" and topic_tags:
             _select_kuaishou_topics(publisher, topic_tags)
@@ -2072,7 +2106,7 @@ def main():
         elif platform == "bilibili" and topic_tags:
             _select_bilibili_tags(publisher, topic_tags, timing_jitter=timing_jitter)
 
-        if is_video_mode and cover_path:
+        if is_video_mode and cover_path and not resume_existing_douyin_draft:
             if platform == "xiaohongshu":
                 _upload_xiaohongshu_video_cover(
                     publisher,
@@ -2087,7 +2121,8 @@ def main():
                     timing_jitter=timing_jitter,
                 )
 
-        print("FILL_STATUS: READY_TO_PUBLISH")
+        if not resume_existing_douyin_draft:
+            print("FILL_STATUS: READY_TO_PUBLISH")
     except ManualTakeoverDetected as e:
         print("FILL_STATUS: MANUAL_TAKEOVER_DETECTED")
         print(f"[pipeline] {e}")
@@ -2112,14 +2147,40 @@ def main():
         print("PUBLISH_MODE: DIRECT_PUBLISH")
         print("[pipeline] Step 5: Clicking publish button...")
         try:
-            note_link = execute_direct_publish(
-                publisher,
-                is_video_mode=is_video_mode,
-            )
-            print("PUBLISH_STATUS: CLICKED_AWAITING_TERMINAL_CHECK")
+            if resume_existing_douyin_draft:
+                from douyin.existing_draft import (
+                    click_existing_draft_once,
+                    format_submit_result,
+                )
+
+                submit_result = click_existing_draft_once(
+                    publisher.cdp,
+                    expected_title=title,
+                    expected_content=content,
+                )
+                note_link = None
+                print(
+                    "PUBLISH_STATUS: SUBMITTED_VERIFIED "
+                    + format_submit_result(submit_result)
+                )
+            else:
+                note_link = execute_direct_publish(
+                    publisher,
+                    is_video_mode=is_video_mode,
+                )
+                print("PUBLISH_STATUS: CLICKED_AWAITING_TERMINAL_CHECK")
             if note_link:
                 print(f"[pipeline] Note published at: {note_link}")
         except CDPError as e:
+            from douyin.existing_draft import ExistingDraftPublishOutcomeUnknown
+
+            if isinstance(e, ExistingDraftPublishOutcomeUnknown):
+                print("PUBLISH_STATUS: PUBLISH_OUTCOME_UNKNOWN")
+                print(f"[pipeline] {e}", file=sys.stderr)
+                publisher.disconnect()
+                if downloader:
+                    downloader.cleanup()
+                return
             print(f"Error clicking publish: {e}", file=sys.stderr)
             if downloader:
                 downloader.cleanup()
