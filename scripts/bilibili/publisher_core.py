@@ -209,10 +209,13 @@ class BilibiliPublisherCore(BasePublisher):
                 self.cdp.navigate(BILIBILI_CREATOR_URL)
                 self.cdp.sleep(PAGE_LOAD_WAIT)
 
-            # 2. 上传视频
+            # 2. 发布页残留未提交视频时禁止继续上传，避免堆积草稿或批量误发。
+            self._assert_no_existing_local_drafts()
+
+            # 3. 上传视频
             self._upload_video(video_path)
 
-            # 3. 填写标题（视频上传后立即可填写，无需等待处理完成）
+            # 4. 填写标题（视频上传后立即可填写，无需等待处理完成）
             self._fill_title(title)
 
             # 4. 填写简介
@@ -242,6 +245,33 @@ class BilibiliPublisherCore(BasePublisher):
     # ========================================================================
     # 内部辅助方法
     # ========================================================================
+
+    def _assert_no_existing_local_drafts(self):
+        """上传前阻止 B站本地未提交视频继续累积或进入批量投稿。"""
+        state = self.cdp.evaluate(r"""
+            (() => {
+                const text = document.body ? document.body.innerText : '';
+                const match = text.match(/本地浏览器存在\s*(\d+)\s*个未提交的视频/);
+                return {
+                    count: match ? Number(match[1]) : 0,
+                    batchMode: text.includes('将以下所有视频')
+                        && text.includes('添加视频')
+                        && text.includes('上传完成'),
+                };
+            })()
+        """) or {}
+
+        count = int(state.get("count") or 0)
+        if count > 0:
+            raise CDPError(
+                f"B站发布页已有 {count} 个未提交视频；"
+                "为防止重复上传或批量误发，已在上传前停止"
+            )
+        if state.get("batchMode"):
+            raise CDPError(
+                "B站当前处于未提交视频批量编辑页；"
+                "为防止重复上传或批量误发，已在上传前停止"
+            )
 
     def _upload_video(self, video_path: str):
         """上传视频"""

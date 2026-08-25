@@ -52,6 +52,14 @@ class _PublishButtonCDP:
         self.sleep_calls += 1
 
 
+class _ExistingBilibiliDraftsCDP:
+    def evaluate(self, _script):
+        return {
+            "count": 9,
+            "titles": ["OPC 视频发布测试"] * 7 + ["AI先淘汰岗位思维"] * 2,
+        }
+
+
 class _PersistentProcessingUI:
     def __init__(self):
         self.clicked = False
@@ -64,6 +72,13 @@ class _PersistentProcessingUI:
 
 
 class PublishFailClosedTest(unittest.TestCase):
+    def test_bilibili_existing_local_drafts_block_new_upload(self):
+        publisher = BilibiliPublisherCore.__new__(BilibiliPublisherCore)
+        publisher.cdp = _ExistingBilibiliDraftsCDP()
+
+        with self.assertRaisesRegex(CDPError, "9 个未提交视频"):
+            publisher._assert_no_existing_local_drafts()
+
     def test_douyin_cover_failure_blocks_ready_status(self):
         with (
             patch(
