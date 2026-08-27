@@ -18,6 +18,7 @@ from scripts.bilibili.publisher_core import BilibiliPublisherCore
 from scripts.publish_pipeline import (
     CDPError as PipelineCDPError,
     _select_bilibili_tags,
+    _upload_douyin_cover_from_modal,
     _upload_douyin_covers,
 )
 
@@ -72,6 +73,32 @@ class _PersistentProcessingUI:
 
 
 class PublishFailClosedTest(unittest.TestCase):
+    def test_douyin_new_cover_modal_uses_semantic_file_input(self):
+        with (
+            patch(
+                "scripts.publish_pipeline._evaluate_js",
+                side_effect=[True, True],
+            ) as evaluate_js,
+            patch(
+                "scripts.publish_pipeline._upload_file_to_selectors",
+                return_value=True,
+            ) as upload_file,
+            patch("scripts.publish_pipeline.time.sleep"),
+        ):
+            uploaded = _upload_douyin_cover_from_modal(
+                object(),
+                "/tmp/vertical.png",
+                timing_jitter=0,
+            )
+
+        self.assertTrue(uploaded)
+        self.assertIn("点击上传文件", evaluate_js.call_args_list[0].args[1])
+        upload_file.assert_called_once_with(
+            unittest.mock.ANY,
+            ['[role="dialog"] input[data-opc-cover-upload-input="true"]'],
+            "/tmp/vertical.png",
+        )
+
     def test_bilibili_existing_local_drafts_block_new_upload(self):
         publisher = BilibiliPublisherCore.__new__(BilibiliPublisherCore)
         publisher.cdp = _ExistingBilibiliDraftsCDP()

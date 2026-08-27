@@ -334,6 +334,46 @@ def _upload_douyin_cover_from_modal(
     timing_jitter: float = 0.25,
 ) -> bool:
     """在抖音封面弹窗里通过主上传区上传封面，并让当前裁剪区切到上传图。"""
+    # 2026-08 新版弹窗不再包含 `.upload-ZOJTUA`，而是把真实文件输入框
+    # 放在 `role=dialog` 下。按“点击上传文件”这一稳定语义定位主封面入口，
+    # 避免误命中 AI 参考图的同类隐藏 input。
+    semantic_input_ready = bool(_evaluate_js(publisher, r"""
+        (() => {
+            const modal = document.querySelector('[role="dialog"]');
+            if (!modal) return false;
+            modal.querySelectorAll('[data-opc-cover-upload-input]')
+                .forEach((el) => el.removeAttribute('data-opc-cover-upload-input'));
+            const inputs = Array.from(modal.querySelectorAll('input[type="file"]'));
+            const target = inputs.find((input) => {
+                const parentText = String(input.parentElement?.innerText || '');
+                return parentText.includes('点击上传文件')
+                    && input.classList.contains('semi-upload-hidden-input');
+            });
+            if (!target) return false;
+            target.setAttribute('data-opc-cover-upload-input', 'true');
+            return true;
+        })()
+    """))
+    if semantic_input_ready:
+        uploaded = _upload_file_to_selectors(
+            publisher,
+            ['[role="dialog"] input[data-opc-cover-upload-input="true"]'],
+            cover_path,
+        )
+        if uploaded:
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                preview_ready = bool(_evaluate_js(publisher, r"""
+                    (() => Array.from(document.querySelectorAll('[role="dialog"] img'))
+                        .some((img) => (img.getAttribute('src') || '').startsWith('data:image')
+                            && img.naturalWidth >= 500
+                            && img.naturalHeight >= 500))()
+                """))
+                if preview_ready:
+                    time.sleep(_jitter_seconds(1.2, timing_jitter, minimum_seconds=0.6))
+                    return True
+                time.sleep(0.8)
+
     upload_rect = None
     deadline = time.time() + 180
     while time.time() < deadline:
