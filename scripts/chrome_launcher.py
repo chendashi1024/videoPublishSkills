@@ -15,6 +15,8 @@ import sys
 import time
 import socket
 import subprocess
+
+from publish_browser_guard import validate_publish_browser, PublishBrowserError
 from typing import Optional
 
 CDP_PORT = 9222
@@ -148,11 +150,22 @@ def launch_chrome(
     """
     global _chrome_process, _current_account
 
+    if account == EDGE_ACCOUNT_NAME and port != CDP_PORT:
+        raise PublishBrowserError("PUBLISH_BROWSER_MISMATCH：edge 发布端口必须为 9222。")
     if is_port_open(port):
+        if port == CDP_PORT or account == EDGE_ACCOUNT_NAME:
+            validate_publish_browser(port=port)
         print(f"[chrome_launcher] Chrome already running on port {port}.")
         return None
 
+    if port == CDP_PORT:
+        account = EDGE_ACCOUNT_NAME
+        override = os.environ.get(EDGE_USER_DATA_DIR_ENV)
+        if override and os.path.realpath(override) != os.path.realpath(EDGE_PROFILE_DIR):
+            raise PublishBrowserError("PUBLISH_BROWSER_MISMATCH：禁止覆盖发布 Profile。")
     chrome_path = get_chrome_path()
+    if account == EDGE_ACCOUNT_NAME and "edge" not in os.path.basename(chrome_path).lower():
+        raise PublishBrowserError("PUBLISH_BROWSER_MISMATCH：发布只能启动 Microsoft Edge。")
     user_data_dir = get_user_data_dir(account)
     _current_account = account
 
@@ -195,6 +208,8 @@ def launch_chrome(
     deadline = time.time() + STARTUP_TIMEOUT
     while time.time() < deadline:
         if is_port_open(port):
+            if port == CDP_PORT or account == EDGE_ACCOUNT_NAME:
+                validate_publish_browser(port=port)
             print(f"[chrome_launcher] Chrome is ready on port {port}.")
             return proc
         time.sleep(0.5)
@@ -217,6 +232,9 @@ def kill_chrome(port: int = CDP_PORT):
     3. Kill by port on Windows (taskkill)
     """
     global _chrome_process
+
+    if port == CDP_PORT and is_port_open(port):
+        validate_publish_browser(port=port)
 
     # Strategy 1: CDP Browser.close
     try:
@@ -326,7 +344,11 @@ def ensure_chrome(
 
     Returns True if Chrome is available, False otherwise.
     """
+    if account == EDGE_ACCOUNT_NAME and port != CDP_PORT:
+        raise PublishBrowserError("PUBLISH_BROWSER_MISMATCH：edge 发布端口必须为 9222。")
     if is_port_open(port):
+        if port == CDP_PORT or account == EDGE_ACCOUNT_NAME:
+            validate_publish_browser(port=port)
         return True
     try:
         launch_chrome(port, headless=headless, account=account)

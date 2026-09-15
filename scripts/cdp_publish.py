@@ -412,6 +412,8 @@ class XiaohongshuPublisher:
 
     def _get_targets(self) -> list[dict]:
         """Get list of available browser targets (tabs). Retries once on failure."""
+        from publish_browser_guard import guard_cdp_endpoint
+        guard_cdp_endpoint(self.host, self.port, self.account_name)
         url = f"http://{self.host}:{self.port}/json"
         for attempt in range(2):
             try:

@@ -349,3 +349,9 @@ MIT License
 
 ## 致谢
 灵感来自：[Post-to-xhs](https://github.com/Angiin/Post-to-xhs)
+
+## OPC 发布专用浏览器硬限制
+
+OPC 发布固定使用 `127.0.0.1:9222 --account edge` 和启动器定义的发布专用 Profile。启动器及 CDP 页面连接共同核验监听进程是 Edge、精确启动端口与 Profile、`/json/version` 和 `/json` 可用。端口有响应不代表验证成功。9222 被日常浏览器或其它进程占用、Profile 不匹配或 CDP 不可用时，返回 `PUBLISH_BROWSER_MISMATCH` 并停止；禁止切换默认 Edge、浏览器扩展、日常 Profile、其它端口或通用代理兜底，禁止自动关闭占用者。修复专用实例后重验，才可继续原发布现场。
+
+检查依赖：`psutil` 与 `lsof`；聚焦验证：`python3 -m pytest tests/test_publish_browser_guard.py`。

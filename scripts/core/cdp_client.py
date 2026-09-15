@@ -88,6 +88,8 @@ class CDPClient:
         Raises:
             CDPError: 连接失败
         """
+        from publish_browser_guard import guard_cdp_endpoint
+        guard_cdp_endpoint(self.host, self.port, None)
         url = f"http://{self.host}:{self.port}/json"
         for attempt in range(2):
             try:
