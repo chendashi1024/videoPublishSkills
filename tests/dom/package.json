@@ -1,0 +1,1 @@
+{"private":true,"description":"小红书离线 DOM 回归测试，不连接浏览器","devDependencies":{"jsdom":"26.1.0"}}

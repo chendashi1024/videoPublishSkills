@@ -375,40 +375,8 @@ class XiaohongshuPublisherCore(BasePublisher):
         print("[XHS Publisher] 点击发布按钮...")
         self.cdp.sleep(ACTION_INTERVAL, minimum_seconds=0.25)
 
-        btn_text = SELECTORS["publish_button_text"]
-
-        # 查找发布按钮并获取位置
-        js_get_rect = f"""
-            (() => {{
-                // 策略 1: 通过按钮文本查找
-                const buttons = document.querySelectorAll('button');
-                for (const btn of buttons) {{
-                    if (btn.textContent.trim() === '{btn_text}') {{
-                        const r = btn.getBoundingClientRect();
-                        return {{ x: r.x, y: r.y, width: r.width, height: r.height }};
-                    }}
-                }}
-
-                // 策略 2: 通过 span 文本查找父按钮
-                const spans = document.querySelectorAll(
-                    '.d-button-content .d-text, .d-button-content span'
-                );
-                for (const span of spans) {{
-                    if (span.textContent.trim() === '{btn_text}') {{
-                        const btn = span.closest(
-                            'button, [role="button"], .d-button, [class*="btn"], [class*="button"]'
-                        );
-                        if (btn) {{
-                            const r = btn.getBoundingClientRect();
-                            return {{ x: r.x, y: r.y, width: r.width, height: r.height }};
-                        }}
-                    }}
-                }}
-                return null;
-            }})();
-        """
-
-        self.ui.click_element_by_cdp("发布按钮", js_get_rect)
+        from .submit_button import click_submit_once
+        click_submit_once(self.cdp)
         print("[XHS Publisher] 发布按钮已点击")
 
         # 等待发布完成并尝试获取笔记链接

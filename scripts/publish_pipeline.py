@@ -491,347 +491,132 @@ def _xiaohongshu_cover_state_ready(state: dict) -> bool:
 
 
 def _find_xiaohongshu_cover_confirm_rect(publisher):
-    """只在小红书封面弹窗内查找确定按钮。"""
-    return _evaluate_js(publisher, r"""
-        (() => {
-            const modal = document.querySelector('.cover-modal')
-                || Array.from(document.querySelectorAll('.d-modal')).find((candidate) =>
-                    candidate.querySelector(
-                        '.crop-ratio-item, .ratio-select, input[type="file"][accept*="image"]'
-                    )
-                );
-            if (!modal) return null;
-            const buttons = Array.from(modal.querySelectorAll('button'));
-            for (const btn of buttons) {
-                const text = (btn.innerText || btn.textContent || '').trim();
-                if (text === '确定') {
-                    const r = btn.getBoundingClientRect();
-                    return { x: r.x, y: r.y, w: r.width, h: r.height };
-                }
-            }
-            return null;
-        })()
-    """)
+    """只点击唯一封面编辑器内可用的完成／确定按钮。"""
+    from xiaohongshu.cover_editor import cover_script
+    return _evaluate_js(publisher, cover_script("return rect(confirm);"))
 
 
 def _upload_xiaohongshu_video_cover(
-    publisher,
-    cover_path: str,
-    timing_jitter: float = 0.25,
+    publisher, cover_path: str, timing_jitter: float = 0.25,
+    *, save_timeout: float = 90,
 ):
-    """设置小红书视频 3:4 竖屏封面。"""
-    print(f"[pipeline] Step 4.2: Uploading Xiaohongshu 3:4 cover: {cover_path}")
+    """上传、选择完整 3:4 封面，只在真实保存完成后返回。"""
+    from xiaohongshu.cover_editor import cover_script
 
-    cover_rect = _evaluate_js(publisher, r"""
-        (() => {
-            const selectors = [
-                '.cover-plugin-preview .cover .default',
-                '.cover-plugin-preview .default.row',
-                '.publish-page-content-cover .default',
-                '.cover-plugin-preview [style*="background-image"]'
-            ];
-            for (const selector of selectors) {
-                const el = document.querySelector(selector);
-                if (!el) continue;
-                const r = el.getBoundingClientRect();
-                if (r.width > 0 && r.height > 0) {
-                    return { x: r.x, y: r.y, w: r.width, h: r.height };
-                }
-            }
-            return null;
-        })()
-    """)
-    if not cover_rect:
-        print("[pipeline] Warning: Xiaohongshu cover preview not found.")
-        return
+    def read(body):
+        return _evaluate_js(publisher, cover_script(body))
 
-    _cdp_click_rect(publisher, cover_rect, timing_jitter)
-    time.sleep(_jitter_seconds(1.3, timing_jitter, minimum_seconds=0.8))
+    def click(rectangle):
+        _cdp_click_rect(publisher, rectangle, timing_jitter)
+        time.sleep(0.3)
 
-    upload_tab_rect = _evaluate_js(publisher, r"""
-        (() => {
-            const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-            const visible = (el) => {
-                if (!el) return false;
-                const style = getComputedStyle(el);
-                const rect = el.getBoundingClientRect();
-                return style.display !== 'none'
-                    && style.visibility !== 'hidden'
-                    && rect.width > 0
-                    && rect.height > 0;
-            };
-            const modal = document.querySelector('.cover-modal, .d-modal');
-            const tab = Array.from(
-                (modal || document).querySelectorAll('button, span, div')
-            ).find((el) => visible(el) && clean(el.innerText || el.textContent) === '上传封面');
-            if (!tab) return null;
-            const r = tab.getBoundingClientRect();
-            return { x: r.x, y: r.y, w: r.width, h: r.height };
-        })()
-    """)
-    if upload_tab_rect:
-        _cdp_click_rect(publisher, upload_tab_rect, timing_jitter)
-        time.sleep(_jitter_seconds(0.6, timing_jitter, minimum_seconds=0.3))
+    def wait_for(body, timeout):
+        deadline = time.monotonic() + timeout
+        while True:
+            result = read(body)
+            if result:
+                return result
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.5)
 
-    ratio_rect = _evaluate_js(publisher, r"""
-        (() => {
-            const el = document.querySelector('.cover-modal .ratio-select, .d-modal .ratio-select');
-            if (!el) return null;
-            const r = el.getBoundingClientRect();
-            return r.width > 0 && r.height > 0
-                ? { x: r.x, y: r.y, w: r.width, h: r.height }
-                : null;
-        })()
-    """)
-    if ratio_rect:
-        _cdp_click_rect(publisher, ratio_rect, timing_jitter)
-        time.sleep(_jitter_seconds(0.4, timing_jitter, minimum_seconds=0.2))
-        vertical_ratio_rect = _evaluate_js(publisher, r"""
-            (() => {
-                const el = document.querySelector('.ratio-select-menu .ratio-item.ratio-3-4');
-                if (!el) return null;
-                const r = el.getBoundingClientRect();
-                return r.width > 0 && r.height > 0
-                    ? { x: r.x, y: r.y, w: r.width, h: r.height }
-                    : null;
-            })()
+    cover_state_script = r"""
+        const cover = [...document.querySelectorAll('.publish-page-content-cover .default, .cover-plugin-preview [style*="background-image"]')].find(visible);
+        const r = cover?.getBoundingClientRect();
+        return {modalOpen: Boolean(modal) || [...document.querySelectorAll('.cover-choose-container')].some(visible),
+            coverSource: cover ? getComputedStyle(cover).backgroundImage : '', coverStyle: cover?.getAttribute('style') || '',
+            coverVertical: Boolean(r && Math.abs(r.width / r.height - 0.75) < 0.02)};
+    """
+    before = read(cover_state_script) or {}
+    if not read("return Boolean(modal);"):
+        entry = read(r"""
+            const label = exact(document, 'button, span, div', '编辑封面');
+            const preview = [...document.querySelectorAll('.cover-plugin-preview .cover .default, .cover-plugin-preview .default.row, .publish-page-content-cover .default, .cover-plugin-preview [style*="background-image"]')].find(visible);
+            return rect(label || preview);
         """)
-        if vertical_ratio_rect:
-            _cdp_click_rect(publisher, vertical_ratio_rect, timing_jitter)
-            time.sleep(_jitter_seconds(0.5, timing_jitter, minimum_seconds=0.25))
+        if not entry:
+            raise CDPError("小红书封面编辑入口未找到，停止填稿")
+        click(entry)
+    # 旧版需先切到上传页；新版直接暴露带语义标签的输入。
+    tab = read("return rect(exact(modal || document, 'button, span, div', '上传封面'));")
+    if tab:
+        click(tab)
+    if not wait_for("return Boolean(modal);", 12):
+        raise CDPError("小红书封面编辑器未出现或不唯一")
 
-    uploaded = _upload_file_to_selectors(
-        publisher,
-        [
-            '.cover-modal input[type="file"][accept*="image"]',
-            '.d-modal input[type="file"][accept*="image"]',
-        ],
-        cover_path,
-    )
+    previous_images = read("return [...modal.querySelectorAll('img')].map(img=>[img.currentSrc || img.src,img.naturalWidth,img.naturalHeight]);")
+    uploaded = False
+    doc = _send_cdp(publisher, "DOM.getDocument")
+    for selector in [
+        'input[type="file"][aria-label="上传封面图片"]',
+        '.cover-modal input[type="file"][accept*="image"]',
+        '.d-modal input[type="file"][accept*="image"]',
+    ]:
+        nodes = _send_cdp(publisher, "DOM.querySelectorAll", {
+            "nodeId": doc["root"]["nodeId"], "selector": selector,
+        }).get("nodeIds", [])
+        if len(nodes) > 1:
+            raise CDPError("小红书封面图片上传入口不唯一，停止避免误传")
+        if nodes:
+            _send_cdp(publisher, "DOM.setFileInputFiles", {"nodeId": nodes[0], "files": [cover_path]})
+            uploaded = True
+            break
     if not uploaded:
         raise CDPError("小红书封面图片上传入口未找到，未能应用 3:4 竖版封面")
+    if not wait_for(r"""
+        const previous = __PREVIOUS_IMAGES__;
+        return modal && [...modal.querySelectorAll('img')].some(img=>
+            img.complete && img.naturalWidth > 0 && Math.abs(img.naturalWidth / img.naturalHeight - 0.75) < 0.02
+            && !previous.some(old=>JSON.stringify(old)===JSON.stringify([img.currentSrc || img.src,img.naturalWidth,img.naturalHeight])));
+    """.replace("__PREVIOUS_IMAGES__", json.dumps(previous_images or [])), 12):
+        raise CDPError("小红书封面未加载完整 3:4 原图")
+    crop = read("return modal && rect(exact(modal, 'button, span, div', '裁剪'));")
+    if crop:
+        click(crop)
+    ratio = read("return modal && rect(exact(modal, '.ratio-option, .crop-ratio-item', '3:4'));")
+    if ratio:
+        click(ratio)
+    else:
+        dropdown = read("return modal && rect(modal.querySelector('.ratio-select'));")
+        if dropdown:
+            click(dropdown)
+            item = read("return rect(exact(document, '.ratio-select-menu .ratio-item', '3:4'));")
+            if item:
+                click(item)
 
-    modal_ready = False
-    deadline = time.time() + 12
-    while time.time() < deadline:
-        modal_ready = bool(_evaluate_js(publisher, r"""
-            (() => {
-                const modal = document.querySelector('.cover-modal, .d-modal');
-                if (!modal) return false;
-                const ratioText = String(
-                    modal.querySelector('.ratio-select, .ratio-text')?.innerText
-                    || modal.querySelector('.ratio-select, .ratio-text')?.textContent
-                    || ''
-                ).trim();
-                const activeRatio = String(
-                    modal.querySelector('.crop-ratio-item-active')?.innerText
-                    || modal.querySelector('.crop-ratio-item-active')?.textContent
-                    || ''
-                ).trim();
-                const hasCropRatioList = Boolean(modal.querySelector('.crop-ratio-item'));
-                const verticalImage = Array.from(modal.querySelectorAll('img')).some((img) =>
-                    img.naturalWidth > 0
-                    && img.naturalHeight > 0
-                    && img.naturalHeight > img.naturalWidth
-                );
-                const verticalPreview = Array.from(modal.querySelectorAll('[style*="background-image"]')).some((el) => {
-                    const r = el.getBoundingClientRect();
-                    return r.height > r.width;
-                });
-                const ratioReady = ratioText.includes('3:4')
-                    || activeRatio === '3:4'
-                    || hasCropRatioList;
-                return ratioReady && (verticalImage || verticalPreview);
-            })()
-        """))
-        if modal_ready:
-            break
-        time.sleep(_jitter_seconds(0.5, timing_jitter, minimum_seconds=0.25))
-    if not modal_ready:
-        raise CDPError("小红书封面弹窗未检测到 3:4 竖版预览，停止避免误用横版封面")
-
-    crop_ratio_rect = _evaluate_js(publisher, r"""
-        (() => {
-            const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-            const visible = (el) => {
-                if (!el) return false;
-                const style = getComputedStyle(el);
-                const rect = el.getBoundingClientRect();
-                return style.display !== 'none'
-                    && style.visibility !== 'hidden'
-                    && rect.width > 0
-                    && rect.height > 0;
-            };
-            const modal = document.querySelector('.cover-modal, .d-modal');
-            const item = Array.from(
-                (modal || document).querySelectorAll('.crop-ratio-item')
-            ).find((el) => visible(el) && clean(el.innerText || el.textContent) === '3:4');
-            if (!item) return null;
-            const r = item.getBoundingClientRect();
-            return { x: r.x, y: r.y, w: r.width, h: r.height };
-        })()
-    """)
-    if crop_ratio_rect:
-        _cdp_click_rect(publisher, crop_ratio_rect, timing_jitter)
-        time.sleep(_jitter_seconds(0.5, timing_jitter, minimum_seconds=0.25))
-
-    complete_cover_ratios = json.dumps(
-        XIAOHONGSHU_COMPLETE_COVER_RATIOS,
-        ensure_ascii=False,
-    )
-    zoom_ready_script = r"""
-        (() => {
-            const modal = document.querySelector('.cover-modal, .d-modal');
-            if (!modal) return false;
-            const value = String(modal.querySelector('.slider-value')?.innerText || '').trim();
-            if (value) return value === '100%';
-            const activeRatio = String(
-                modal.querySelector('.crop-ratio-item-active')?.innerText
-                || modal.querySelector('.crop-ratio-item-active')?.textContent
-                || ''
-            ).trim();
-            const completeVerticalImage = Array.from(modal.querySelectorAll('img')).some((img) =>
-                img.naturalWidth > 0
-                && img.naturalHeight > 0
-                && img.naturalHeight > img.naturalWidth
-                && Math.abs((img.naturalWidth / img.naturalHeight) - 0.75) < 0.02
-            );
-            return __COMPLETE_COVER_RATIOS__.includes(activeRatio) && completeVerticalImage;
-        })()
-    """.replace("__COMPLETE_COVER_RATIOS__", complete_cover_ratios)
-    zoom_ready = bool(_evaluate_js(publisher, zoom_ready_script))
-    if not zoom_ready:
-        slider_rect = _evaluate_js(publisher, r"""
-            (() => {
-                const button = document.querySelector('.cover-modal .d-slider__button, .d-modal .d-slider__button');
-                const runway = document.querySelector('.cover-modal .d-slider__runway, .d-modal .d-slider__runway');
-                if (!button || !runway) return null;
-                const b = button.getBoundingClientRect();
-                const r = runway.getBoundingClientRect();
-                return {
-                    button: { x: b.x, y: b.y, w: b.width, h: b.height },
-                    runway: { x: r.x, y: r.y, w: r.width, h: r.height },
-                };
-            })()
-        """)
-        if not slider_rect:
-            raise CDPError("小红书封面图片大小滑块未找到，无法确认完整竖版封面")
-
-        start_x = float(slider_rect["button"]["x"]) + float(slider_rect["button"]["w"]) / 2
-        y = float(slider_rect["button"]["y"]) + float(slider_rect["button"]["h"]) / 2
-        end_x = float(slider_rect["runway"]["x"])
-        _send_cdp(publisher, "Input.dispatchMouseEvent", {
-            "type": "mouseMoved",
-            "x": start_x,
-            "y": y,
-        })
-        _send_cdp(publisher, "Input.dispatchMouseEvent", {
-            "type": "mousePressed",
-            "x": start_x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1,
-        })
-        for step in range(1, 13):
-            x = start_x + (end_x - start_x) * step / 12
-            _send_cdp(publisher, "Input.dispatchMouseEvent", {
-                "type": "mouseMoved",
-                "x": x,
-                "y": y,
-                "button": "left",
-                "buttons": 1,
-            })
-            time.sleep(_jitter_seconds(0.05, timing_jitter, minimum_seconds=0.02))
-        _send_cdp(publisher, "Input.dispatchMouseEvent", {
-            "type": "mouseReleased",
-            "x": end_x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1,
-        })
-        time.sleep(_jitter_seconds(0.8, timing_jitter, minimum_seconds=0.4))
-
-        zoom_ready = bool(_evaluate_js(publisher, r"""
-            (() => {
-                const modal = document.querySelector('.cover-modal, .d-modal');
-                if (!modal) return false;
-                const value = String(modal.querySelector('.slider-value')?.innerText || '').trim();
-                return value === '100%';
-            })()
-        """))
-    if not zoom_ready:
-        raise CDPError("小红书封面图片大小未能归零到 100%，停止避免生成放大裁切封面")
-
-    confirm_rect = _find_xiaohongshu_cover_confirm_rect(publisher)
-    if not confirm_rect:
-        raise CDPError("小红书封面确认按钮未找到，未能应用 3:4 竖版封面")
-
-    ok = False
-    for _ in range(3):
-        _cdp_click_rect(publisher, confirm_rect, timing_jitter)
-        time.sleep(_jitter_seconds(1.2, timing_jitter, minimum_seconds=0.8))
-        cover_state = _evaluate_js(publisher, r"""
-            (() => {
-                const modalOpen = !!document.querySelector('.cover-modal, .d-modal');
-                const cover = document.querySelector('.publish-page-content-cover .default');
-                const preview = document.querySelector('.publish-page-preview img.cover');
-                const coverStyle = cover ? (cover.getAttribute('style') || '') : '';
-                const coverRect = cover ? cover.getBoundingClientRect() : null;
-                const previewVertical = !!preview
-                    && preview.naturalWidth > 0
-                    && preview.naturalHeight > 0
-                    && preview.naturalHeight > preview.naturalWidth;
-                const coverVertical = !!coverRect && coverRect.height > coverRect.width;
-                return {
-                    modalOpen,
-                    previewVertical,
-                    coverVertical,
-                    coverStyle,
-                };
-            })()
-        """) or {}
-        cover_state["coverApplied"] = _xiaohongshu_cover_state_ready(cover_state)
-        if cover_state.get("coverApplied") and cover_state.get("modalOpen"):
-            close_rect = _evaluate_js(publisher, r"""
-                (() => {
-                    const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-                    const buttons = Array.from(document.querySelectorAll('.cover-modal button, .d-modal button'));
-                    const btn = buttons.find((button) =>
-                        ['取消', '关闭'].includes(clean(button.innerText || button.textContent))
-                    );
-                    if (!btn) return null;
-                    const r = btn.getBoundingClientRect();
-                    return { x: r.x, y: r.y, w: r.width, h: r.height };
-                })()
-            """)
-            if close_rect:
-                _cdp_click_rect(publisher, close_rect, timing_jitter)
-                time.sleep(_jitter_seconds(0.8, timing_jitter, minimum_seconds=0.4))
-            cover_state = _evaluate_js(publisher, r"""
-                (() => {
-                    const modalOpen = !!document.querySelector('.cover-modal, .d-modal');
-                    if (modalOpen) {
-                        for (const el of Array.from(document.querySelectorAll('.cover-modal, .d-modal, .d-modal-mask'))) {
-                            el.remove();
-                        }
-                        document.body.style.overflow = 'auto';
-                    }
-                    return {
-                        modalOpen: !!document.querySelector('.cover-modal, .d-modal'),
-                        coverApplied: true,
-                    };
-                })()
-            """) or cover_state
-        ok = bool(cover_state.get("coverApplied")) and not bool(cover_state.get("modalOpen"))
-        if ok:
-            break
-        confirm_rect = _find_xiaohongshu_cover_confirm_rect(publisher)
-        if not confirm_rect:
-            break
-
-    if not ok:
-        raise CDPError("小红书封面未应用为 3:4 竖版，停止避免误判发布页")
-    print("[pipeline] Xiaohongshu 3:4 cover uploaded.")
+    zoom_state_script = r"""
+        if (!modal) return null;
+        const ratio = clean(modal.querySelector('.ratio-option.active, .crop-ratio-item-active, .ratio-select, .ratio-text'));
+        const slider = clean(modal.querySelector('.slider-value')) ||
+            [...modal.querySelectorAll('span')].map(clean).find(t=>/^\d+%$/.test(t)) || '';
+        const images = [...modal.querySelectorAll('img')].map(img=>[img.naturalWidth,img.naturalHeight]);
+        return {ratio,slider,images};
+    """
+    zoom = read(zoom_state_script) or {}
+    if zoom.get("slider") and zoom["slider"] != "100%":
+        slider = read("return modal && rect(modal.querySelector('.d-slider__runway'));")
+        if slider:
+            # 图片大小的最左端为 100%，随后仍以界面值回读为准。
+            click({"x": slider["x"], "y": slider["y"], "w": 1, "h": slider["h"]})
+            zoom = read(zoom_state_script) or {}
+    if zoom.get("ratio") not in XIAOHONGSHU_COMPLETE_COVER_RATIOS or not _xiaohongshu_cover_zoom_ready(
+        zoom.get("slider", ""), zoom.get("ratio", ""), zoom.get("images", []),
+    ):
+        raise CDPError("小红书封面未确认完整 3:4 与 100% 图片大小，停止避免裁切")
+    confirm = wait_for("return rect(confirm);", 12)
+    if not confirm:
+        raise CDPError("小红书封面完成按钮不存在、禁用或仍在处理")
+    click(confirm)  # 保存只点一次；加载中不得连点、取消或删除弹窗。
+    deadline = time.monotonic() + save_timeout
+    while True:
+        state = read(cover_state_script) or {}
+        if (not state.get("modalOpen") and _xiaohongshu_cover_state_ready(state)
+                and state.get("coverSource") != before.get("coverSource")):
+            print("[pipeline] 小红书 3:4 封面已真实保存。")
+            return
+        if time.monotonic() >= deadline:
+            raise CDPError("小红书封面保存超时或封面未更新；保留编辑现场，禁止继续发布")
+        time.sleep(0.5)
 
 
 def _click_first_visible_text(

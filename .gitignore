@@ -51,3 +51,6 @@ images/publish_temp/*
 # OS
 .DS_Store
 Thumbs.db
+
+# 离线 DOM 测试依赖
+/tests/dom/node_modules/

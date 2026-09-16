@@ -23,6 +23,21 @@
 - **通知评论抓取**：支持在 `/notification` 页面抓取 `you/mentions` 接口返回
 - **内容数据看板抓取**：支持抓取“笔记基础信息”表（曝光/观看/点赞等）并导出 CSV
 
+## 小红书新版页面与离线回归
+
+封面支持带“上传封面图片”标签的输入、新版“裁剪 → 3:4 → 完成”及旧版弹窗。保存只点击一次，最多等待 90 秒；要求编辑器关闭且主封面图片更新，卡住时保留现场并停止，不清理 DOM 冒充成功。仍须由上层验证平台实际封面与本地图片相符。
+
+发布按钮通过 CDP 读取封闭 shadow root 中唯一、可用的“发布 / 定时发布”按钮，核对定时开关状态；不点击同时包含“暂存离开”的宿主中心，提交不重试。精确定时时间由上层 OPC 的 `schedule_publish.py` 设置并验证。
+
+测试需要 Python、pytest 与 Node.js 18+，jsdom 仅用于测试，不加载外部资源或连接浏览器：
+
+```bash
+npm ci --prefix tests/dom
+python3 -m pytest tests/test_xiaohongshu_cover.py tests/test_xiaohongshu_dom.py tests/test_publish_modes.py tests/test_publish_browser_guard.py tests/test_publish_fail_closed.py
+```
+
+离线夹具验证选择器、状态和单次点击，不能证明平台网络保存已恢复。真实发布仍需当次页面回读。
+
 ## 安装
 
 ### 环境要求
