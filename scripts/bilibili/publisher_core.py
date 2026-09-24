@@ -677,7 +677,7 @@ class BilibiliPublisherCore(BasePublisher):
         self.cdp.sleep(ACTION_INTERVAL)
 
     def _upload_cover(self, cover_path: str):
-        """上传封面"""
+        """把同一张横版封面分别上传到首页推荐和个人空间。"""
         print(f"[Bilibili] 上传封面: {cover_path}")
 
         opened = self.cdp.evaluate(r"""
@@ -714,6 +714,102 @@ class BilibiliPublisherCore(BasePublisher):
 
         self.cdp.sleep(1.2)
 
+        initial = self._read_cover_editor_state()
+        panel_labels = (("4_3", "首页推荐封面"), ("16_9", "个人空间封面"))
+        if not initial.get("editorOpen") or not all(
+            initial.get("panels", {}).get(ratio, {}).get("fingerprint")
+            and initial["panels"][ratio].get("opaquePixels", 0) > 0
+            and label in initial["panels"][ratio].get("title", "")
+            for ratio, label in panel_labels
+        ):
+            raise CDPError("B站封面编辑器缺少首页推荐或个人空间画面")
+
+        for ratio, label in (("4_3", "首页推荐"), ("16_9", "个人空间")):
+            before_upload = self._select_cover_panel(ratio, label)
+            self._upload_cover_file(cover_path)
+            for _ in range(20):
+                state = self._read_cover_editor_state()
+                panel = state.get("panels", {}).get(ratio, {})
+                if panel.get("active") and panel.get("fingerprint") != before_upload and panel.get("opaquePixels", 0) > 0:
+                    break
+                self.cdp.sleep(0.5)
+            else:
+                raise CDPError(f"B站{label}封面上传后画面未更新，已停止投稿")
+
+        final = self._read_cover_editor_state()
+        for ratio, label in (("4_3", "首页推荐"), ("16_9", "个人空间")):
+            panel = final.get("panels", {}).get(ratio, {})
+            if panel.get("fingerprint") == initial["panels"][ratio]["fingerprint"] or panel.get("opaquePixels", 0) <= 0:
+                raise CDPError(f"B站{label}封面未保留上传结果，已停止投稿")
+
+        self._complete_cover_editor()
+        print("[Bilibili] 首页推荐 4:3 与个人空间 16:9 封面均已上传")
+
+    def _read_cover_editor_state(self) -> dict[str, Any]:
+        """读取两个画布的选中状态和可见内容指纹。"""
+        return self.cdp.evaluate(r"""
+            (() => {
+                const editor = document.querySelector('.cover-editor');
+                const panels = {};
+                for (const ratio of ['4_3', '16_9']) {
+                    const image = editor?.querySelector('#editor_' + ratio);
+                    const panel = image?.parentElement;
+                    const canvas = image?.querySelector('canvas.lower-canvas');
+                    const title = panel?.querySelector('.cover-editor-panel-canvas-title .text')?.textContent || '';
+                    let fingerprint = null;
+                    let opaquePixels = 0;
+                    if (canvas) {
+                        try {
+                            const { width, height } = canvas;
+                            const pixels = canvas.getContext('2d').getImageData(0, 0, width, height).data;
+                            let hash = 2166136261;
+                            for (let y = 0; y < height; y += 20) {
+                                for (let x = 0; x < width; x += 20) {
+                                    const offset = (y * width + x) * 4;
+                                    if (pixels[offset + 3] > 0) opaquePixels++;
+                                    for (let channel = 0; channel < 4; channel++) {
+                                        hash = Math.imul(hash ^ pixels[offset + channel], 16777619);
+                                    }
+                                }
+                            }
+                            fingerprint = (hash >>> 0).toString(16);
+                        } catch (_) {}
+                    }
+                    panels[ratio] = {
+                        active: Boolean(panel?.classList.contains('active')),
+                        fingerprint,
+                        opaquePixels,
+                        title: title.trim(),
+                    };
+                }
+                return { editorOpen: Boolean(editor), panels };
+            })()
+        """) or {}
+
+    def _select_cover_panel(self, ratio: str, label: str) -> str:
+        """点击对应画面，而不是只改标题或复用当前选中区。"""
+        selected = self.cdp.evaluate(f"""
+            (() => {{
+                const image = document.querySelector('.cover-editor #editor_{ratio}');
+                if (!image) return null;
+                image.scrollIntoView({{ block: 'center' }});
+                const rect = image.getBoundingClientRect();
+                return {{ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }};
+            }})()
+        """)
+        if not selected:
+            raise CDPError(f"未找到 B站{label}封面画面")
+        self.ui.click_mouse(selected["x"], selected["y"])
+        self.cdp.sleep(0.3)
+        state = self._read_cover_editor_state()
+        panel = state.get("panels", {}).get(ratio, {})
+        if not panel.get("active") or not panel.get("fingerprint"):
+            raise CDPError(f"B站{label}封面画面未选中")
+        return str(panel["fingerprint"])
+
+    def _upload_cover_file(self, cover_path: str):
+        """使用左下角共用上传入口，把文件送入当前选中的画面。"""
+
         document = self.cdp.send("DOM.getDocument")
         root_id = document.get("root", {}).get("nodeId")
         if not root_id:
@@ -721,7 +817,7 @@ class BilibiliPublisherCore(BasePublisher):
 
         query = self.cdp.send("DOM.querySelector", {
             "nodeId": root_id,
-            "selector": '.cover-editor input[type="file"][accept*="image"], input[type="file"][accept*="image"]',
+            "selector": '.cover-editor .bcc-upload-wrapper input[type="file"][accept*="image"]',
         })
         node_id = query.get("nodeId")
         if not node_id:
@@ -733,26 +829,8 @@ class BilibiliPublisherCore(BasePublisher):
         })
         self._dispatch_cover_input_events()
 
-        self.cdp.sleep(3)
-
-        has_preview = self.cdp.evaluate(r"""
-            (() => {
-                const hasBlobImage = Array.from(
-                    document.querySelectorAll('.cover-editor img')
-                ).some((img) =>
-                    img.src.startsWith('blob:')
-                    && img.naturalWidth > 0
-                    && img.naturalHeight > 0
-                );
-                const uploadArea = document.querySelector(
-                    '.cover-editor .upload-area.has-image'
-                );
-                return hasBlobImage || Boolean(uploadArea);
-            })()
-        """)
-        if not has_preview:
-            raise CDPError("B站封面上传后未检测到预览图")
-
+    def _complete_cover_editor(self):
+        """两个画面都验证后再保存编辑器。"""
         completed = self.cdp.evaluate(r"""
             (() => {
                 const candidates = Array.from(document.querySelectorAll(
@@ -783,8 +861,11 @@ class BilibiliPublisherCore(BasePublisher):
         if not completed:
             raise CDPError("未找到 B站封面编辑器完成按钮")
 
-        self.cdp.sleep(2)
-        print("[Bilibili] 封面上传完成")
+        for _ in range(20):
+            if not self.cdp.evaluate("Boolean(document.querySelector('.cover-editor'))"):
+                return
+            self.cdp.sleep(0.5)
+        raise CDPError("B站双封面保存后编辑器未关闭，已停止投稿")
 
     def _dispatch_cover_input_events(self):
         """补发 B站封面文件输入事件，确保重复选择同一文件也能生效。"""

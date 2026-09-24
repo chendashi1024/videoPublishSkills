@@ -3,7 +3,7 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -160,6 +160,72 @@ class PublishFailClosedTest(unittest.TestCase):
 
         self.assertIn("new Event('input'", publisher.cdp.script)
         self.assertIn("new Event('change'", publisher.cdp.script)
+
+    def test_bilibili_uploads_both_cover_ratios_before_save(self):
+        publisher = BilibiliPublisherCore.__new__(BilibiliPublisherCore)
+        publisher.cdp = Mock()
+        publisher.cdp.evaluate.return_value = True
+        initial = {
+            "editorOpen": True,
+            "panels": {
+                "4_3": {"fingerprint": "original-4", "opaquePixels": 100, "title": "首页推荐封面（4:3）"},
+                "16_9": {"fingerprint": "original-16", "opaquePixels": 100, "title": "个人空间封面（16:9）"},
+            },
+        }
+        first = {
+            "panels": {
+                "4_3": {"fingerprint": "uploaded-4", "active": True, "opaquePixels": 100},
+                "16_9": {"fingerprint": "original-16", "active": False, "opaquePixels": 100},
+            },
+        }
+        second = {
+            "panels": {
+                "4_3": {"fingerprint": "uploaded-4", "active": False, "opaquePixels": 100},
+                "16_9": {"fingerprint": "uploaded-16", "active": True, "opaquePixels": 100},
+            },
+        }
+        with (
+            patch.object(publisher, "_read_cover_editor_state", side_effect=[initial, first, second, second]),
+            patch.object(publisher, "_select_cover_panel", side_effect=["original-4", "original-16"]) as select_panel,
+            patch.object(publisher, "_upload_cover_file") as upload_file,
+            patch.object(publisher, "_complete_cover_editor") as complete,
+        ):
+            publisher._upload_cover("/tmp/horizontal.png")
+
+        self.assertEqual(select_panel.call_args_list, [
+            call("4_3", "首页推荐"), call("16_9", "个人空间"),
+        ])
+        self.assertEqual(upload_file.call_args_list, [
+            call("/tmp/horizontal.png"), call("/tmp/horizontal.png"),
+        ])
+        complete.assert_called_once_with()
+
+    def test_bilibili_missing_second_cover_blocks_save(self):
+        publisher = BilibiliPublisherCore.__new__(BilibiliPublisherCore)
+        publisher.cdp = Mock()
+        publisher.cdp.evaluate.return_value = True
+        initial = {
+            "editorOpen": True,
+            "panels": {
+                "4_3": {"fingerprint": "original-4", "opaquePixels": 100, "title": "首页推荐封面（4:3）"},
+                "16_9": {"fingerprint": "original-16", "opaquePixels": 100, "title": "个人空间封面（16:9）"},
+            },
+        }
+        first = {"panels": {"4_3": {
+            "fingerprint": "uploaded-4", "active": True, "opaquePixels": 100,
+        }}}
+        unchanged = {"panels": {"16_9": {
+            "fingerprint": "original-16", "active": True, "opaquePixels": 100,
+        }}}
+        with (
+            patch.object(publisher, "_read_cover_editor_state", side_effect=[initial, first] + [unchanged] * 20),
+            patch.object(publisher, "_select_cover_panel", side_effect=["original-4", "original-16"]),
+            patch.object(publisher, "_upload_cover_file"),
+            patch.object(publisher, "_complete_cover_editor") as complete,
+        ):
+            with self.assertRaisesRegex(CDPError, "个人空间封面上传后画面未更新"):
+                publisher._upload_cover("/tmp/horizontal.png")
+        complete.assert_not_called()
 
     def test_bilibili_ready_button_wins_over_stale_processing_node(self):
         publisher = BilibiliPublisherCore.__new__(BilibiliPublisherCore)
